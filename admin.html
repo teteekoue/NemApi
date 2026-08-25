@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Tableau de bord</title>
+<link rel="stylesheet" href="/admin.css">
+<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<button class="menu-btn" aria-label="Menu" type="button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div>
+        <div class="name">NemApi</div>
+        <div class="tag">Pont API local</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/" class="active">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Tableau de bord
+      </a>
+      <a href="/config">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configuration
+      </a>
+      <a href="/api-keys-page" id="api-keys-link">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        <span>Clés API</span>
+        <span id="api-keys-badge" style="margin-left: 4px; font-size: 10px; padding: 2px 4px; border-radius: 4px; display: none;"></span>
+      </a>
+      <a href="/chat">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat test
+      </a>
+      <a href="/analytics">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Analytics
+      </a>
+    </nav>
+    <div class="side-section">Endpoint</div>
+    <div style="padding:8px 6px 0">
+      <div class="endpoint-box" style="font-size:11px;padding:8px 10px">
+        <code id="side-endpoint">http://127.0.0.1:8080/v1</code>
+      </div>
+    </div>
+    <div class="side-foot">
+      <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
+      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Tableau de bord</h1>
+          <div class="sub">Vue d'ensemble du pont API local et des fournisseurs.</div>
+        </div>
+        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+      </div>
+
+      <div class="grid g4" style="margin-bottom:16px">
+        <div class="stat" style="--accent:var(--grad);--accent-soft:rgba(96,165,250,.12)">
+          <div class="head"><span class="label">Requêtes</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
+          <div class="value" id="st-requests">0</div>
+          <div class="trend">depuis le démarrage</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#22d3ee,#60a5fa);--accent-soft:rgba(34,211,238,.12)">
+          <div class="head"><span class="label">Tokens</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
+          <div class="value" id="st-tokens">0</div>
+          <div class="trend">prompt + complétion</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#34d399,#22d3ee);--accent-soft:rgba(52,211,153,.12)">
+          <div class="head"><span class="label">Uptime</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span></div>
+          <div class="value" id="st-uptime">0s</div>
+          <div class="trend">proxy actif</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#fbbf24,#f87171);--accent-soft:rgba(251,191,36,.12)">
+          <div class="head"><span class="label">Fournisseurs</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span></div>
+          <div class="value" id="st-ready">0/4</div>
+          <div class="trend">prêts / configurés</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          Endpoint API
+        </h3>
+        <p class="desc">Pointe tes agents (Qwen Code, Cursor, Continue…) vers cette base URL.</p>
+        <div class="endpoint-box">
+          <code>http://127.0.0.1:8080/v1</code>
+          <button class="btn-ghost btn-sm" type="button" onclick="copyText('http://127.0.0.1:8080/v1')">Copier</button>
+        </div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+            Fournisseurs
+          </h3>
+          <p class="desc">État des onglets navigateur reliés au proxy.</p>
+          <div id="dash-providers" class="providers"><span style="color:var(--faint)">Chargement…</span></div>
+        </div>
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v16h16"/><path d="M4 20l6-6 4 4 6-8"/></svg>
+            Journal temps réel
+          </h3>
+          <p class="desc">Jobs, erreurs d'injection et événements extension.</p>
+          <div id="dash-logs" class="logs">—</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin.js"></script>
+<script>
+let catalog = [];
+
+function renderDashProviders(state) {
+  const byProvider = {};
+  for (const tab of state.tabs || []) (byProvider[tab.provider] ||= []).push(tab);
+  $("dash-providers").innerHTML = catalog.map((p) => {
+    const tabs = byProvider[p.id] || [];
+    const selected = state.targetTabs?.[p.id];
+    const ready = !!selected;
+    const color = PCOLORS[p.id] || "var(--blue)";
+    return `<div class="provider" style="--pcolor:${color}">
+      <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge ${ready ? "ok" : "no"}">${ready ? "Prêt" : "Inactif"}</span></div>
+      <div class="purl">${ready ? esc((tabs.find((t) => t.id === selected) || {}).title || "Onglet sélectionné") : "Aucun onglet connecté"}</div>
+      <a class="btn-ghost btn-sm" style="display:block;text-align:center;text-decoration:none" href="/config">Configurer</a>
+    </div>`;
+  }).join("");
+  const readyCount = catalog.filter((p) => state.targetTabs?.[p.id]).length;
+  $("st-ready").textContent = `${readyCount}/${catalog.length || 4}`;
+}
+
+async function refresh() {
+  try {
+    const [providers, state, stats] = await Promise.all([
+      api("/providers"),
+      api("/extension/state"),
+      api("/stats"),
+    ]);
+    if (!catalog.length) catalog = providers.providers;
+    setConn(!!state.connected, !!state.busy);
+    renderDashProviders(state);
+    renderLogs($("dash-logs"), state.logs);
+    $("st-requests").textContent = fmtNum(stats.total_requests);
+    $("st-tokens").textContent = fmtNum((stats.prompt_tokens || 0) + (stats.completion_tokens || 0));
+    $("st-uptime").textContent = fmtUptime(stats.uptime_seconds);
+  } catch (e) {
+    setConn(false, false);
+    if ($("sconn")) $("sconn").textContent = "Proxy inaccessible : " + e.message;
+    if ($("hconn")) $("hconn").textContent = "Proxy inaccessible";
+  }
+}
+
+async function updateApiKeysBadge() {
+  try {
+    const res = await fetch('/api-keys/config');
+    if (res.ok) {
+      const data = await res.json();
+      const badge = document.getElementById('api-keys-badge');
+      const link = document.getElementById('api-keys-link');
+      
+      if (badge) {
+        badge.style.display = 'inline';
+        if (data.require_auth) {
+          badge.textContent = data.key_count || 0;
+          badge.style.background = 'var(--success)';
+          badge.style.color = 'white';
+        } else {
+          badge.textContent = 'OFF';
+          badge.style.background = 'var(--warn)';
+          badge.style.color = 'black';
+        }
+      }
+    }
+  } catch (e) {
+    console.log('Impossible de vérifier les clés API:', e);
+  }
+}
+
+refresh();
+setInterval(refresh, 1500);
+updateApiKeysBadge();
+setInterval(updateApiKeysBadge, 10000);
+</script>
+</body>
+</html>

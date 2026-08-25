@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Chat test</title>
+<link rel="stylesheet" href="/admin.css">
+<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<button class="menu-btn" aria-label="Menu" type="button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div>
+        <div class="name">NemApi</div>
+        <div class="tag">Pont API local</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Tableau de bord
+      </a>
+      <a href="/config">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configuration
+      </a>
+      <a href="/chat" class="active">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat test
+      </a>
+      <a href="/analytics">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Analytics
+      </a>
+    </nav>
+    <div class="side-foot">
+      <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
+      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Chat test</h1>
+          <div class="sub">Envoie une requête réelle via le proxy pour valider un provider.</div>
+        </div>
+        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+      </div>
+
+      <div class="chat-wrap">
+        <div class="chat-toolbar">
+          <div class="field">
+            <label>Modèle</label>
+            <select id="chat-model"></select>
+          </div>
+          <div class="field grow">
+            <label>System (optionnel)</label>
+            <input type="text" id="chat-context" placeholder="Tu es un assistant…">
+          </div>
+          <button class="btn-ghost" id="chat-clear" type="button">Effacer</button>
+        </div>
+        <div class="api-key-bar" id="api-key-bar" style="display: none; margin-bottom: 12px; padding: 12px; background: var(--bg-soft); border-radius: 8px; border: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 18px; height: 18px; flex-shrink: 0;">
+              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+            </svg>
+            <input type="text" id="chat-api-key" placeholder="Coller votre clé API ici…" style="flex: 1; background: transparent; border: none; outline: none; font-family: inherit; font-size: inherit; color: inherit;">
+            <button class="btn-ghost btn-sm" type="button" onclick="toggleApiKeyBar()" style="flex-shrink: 0;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;">
+                <path d="M18 6L6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="chat-body" id="chat-body">
+          <div class="empty-chat">
+            <div class="big">💬</div>
+            Sélectionne un modèle et envoie un message de test.
+          </div>
+        </div>
+        <div class="chat-input">
+          <textarea id="chat-input" rows="1" placeholder="Message… (Entrée pour envoyer, Maj+Entrée pour nouvelle ligne)"></textarea>
+          <button class="btn-primary" id="chat-send" type="button">Envoyer</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin.js"></script>
+<script>
+let chatHistory = [];
+let chatBusy = false;
+
+function initChatSelectors() {
+  const models = ["deepseek-chat", "qwen-chat", "claude-chat", "gemini-chat"];
+  $("chat-model").innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+}
+
+function addMsg(role, text) {
+  const body = $("chat-body");
+  const empty = body.querySelector(".empty-chat");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="who">${role === "user" ? "Vous" : "Assistant"}</div><div class="content">${esc(text)}</div>`;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+  return div;
+}
+
+function setMsgContent(el, text) {
+  const c = el.querySelector(".content");
+  c.textContent = text;
+  $("chat-body").scrollTop = $("chat-body").scrollHeight;
+}
+
+function getApiKeyHeader() {
+  const apiKey = document.getElementById('chat-api-key').value.trim();
+  if (apiKey) {
+    return { "Authorization": "Bearer " + apiKey };
+  }
+  return {};
+}
+
+async function streamChat(provider, model, messages, onDelta) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...getApiKeyHeader()
+  };
+  const res = await fetch("/v1/chat/completions", {
+    method: "POST",
+    headers: headers,
+    body: JSON.stringify({ provider, model, messages, stream: true }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error?.message || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") return;
+      try {
+        const json = JSON.parse(data);
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) onDelta(delta);
+      } catch (_) {}
+    }
+  }
+}
+
+async function sendChat() {
+  if (chatBusy) return;
+  const model = $("chat-model").value;
+  const text = $("chat-input").value.trim();
+  if (!text) return;
+  const system = $("chat-context").value.trim();
+  const modelToProvider = {
+    "deepseek-chat": "deepseek",
+    "qwen-chat": "qwen",
+    "claude-chat": "claude",
+    "gemini-chat": "gemini",
+  };
+  const provider = modelToProvider[model] || model.split("-")[0];
+
+  $("chat-input").value = "";
+  addMsg("user", text);
+  const assistantEl = addMsg("assistant", "");
+  const cursor = document.createElement("span");
+  cursor.className = "cursor";
+  assistantEl.querySelector(".content").appendChild(cursor);
+  chatBusy = true;
+  $("chat-send").disabled = true;
+  let full = "";
+  const messages = [];
+  if (system) messages.push({ role: "system", content: system });
+  for (const m of chatHistory) messages.push(m);
+  messages.push({ role: "user", content: text });
+  try {
+    await streamChat(provider, model, messages, (delta) => {
+      full += delta;
+      setMsgContent(assistantEl, full);
+    });
+    chatHistory.push({ role: "user", content: text });
+    chatHistory.push({ role: "assistant", content: full });
+  } catch (e) {
+    setMsgContent(assistantEl, "");
+    assistantEl.classList.add("error");
+    assistantEl.querySelector(".who").textContent = "Erreur";
+    setMsgContent(assistantEl, e.message);
+  } finally {
+    chatBusy = false;
+    $("chat-send").disabled = false;
+    $("chat-input").focus();
+  }
+}
+
+async function refresh() {
+  try {
+    const state = await api("/extension/state");
+    setConn(!!state.connected, !!state.busy);
+  } catch (e) {
+    setConn(false, false);
+    if ($("sconn")) $("sconn").textContent = "Proxy inaccessible : " + e.message;
+    if ($("hconn")) $("hconn").textContent = "Proxy inaccessible";
+  }
+}
+
+$("chat-send").addEventListener("click", sendChat);
+$("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+$("chat-clear").addEventListener("click", () => {
+  chatHistory = [];
+  $("chat-body").innerHTML =
+    '<div class="empty-chat"><div class="big">💬</div>Sélectionne un modèle et envoie un message de test.</div>';
+});
+
+function toggleApiKeyBar() {
+  const bar = document.getElementById('api-key-bar');
+  const input = document.getElementById('chat-api-key');
+  if (bar.style.display === 'none') {
+    bar.style.display = 'flex';
+    input.focus();
+  } else {
+    bar.style.display = 'none';
+    input.value = '';
+  }
+}
+
+async function checkApiProtection() {
+  try {
+    const res = await fetch('/api-keys/config');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.require_auth) {
+        document.getElementById('api-key-bar').style.display = 'flex';
+      }
+    }
+  } catch (e) {
+    console.log('Impossible de vérifier la protection API:', e);
+  }
+}
+
+initChatSelectors();
+refresh();
+setInterval(refresh, 1500);
+checkApiProtection();
+</script>
+</body>
+</html>

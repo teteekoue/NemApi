@@ -1,0 +1,17 @@
+{
+  "api_keys": {},
+  "settings": {
+    "stream_enabled": true,
+    "auto_config": true,
+    "fresh_chat": false,
+    "premium_md": true
+  },
+  "_api_keys_backup": {
+    "02c1c9babc6a513f0ab789293d8408e247aa0b4a18e65aa1e8be4667d4c6197d": {
+      "id": "02c1c9ba",
+      "key": "nemapi-tokenEXsUnOQrErgoyNrglcQzQ6fJh4VLoDKQ",
+      "name": "default",
+      "created_at": "2026-08-25 19:21:58"
+    }
+  }
+}

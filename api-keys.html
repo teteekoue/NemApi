@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Clés API</title>
+<link rel="stylesheet" href="/admin.css">
+<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<button class="menu-btn" aria-label="Menu" type="button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div>
+        <div class="name">NemApi</div>
+        <div class="tag">Pont API local</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Tableau de bord
+      </a>
+      <a href="/config">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configuration
+      </a>
+      <a href="/api-keys-page" class="active">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        Clés API
+      </a>
+      <a href="/chat">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat test
+      </a>
+      <a href="/analytics">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Analytics
+      </a>
+    </nav>
+    <div class="side-foot">
+      <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
+      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Clés API</h1>
+          <div class="sub">Gérez les clés d'accès pour sécuriser votre API sur le réseau local.</div>
+        </div>
+        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 7h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2m-6 0H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2"/><path d="M9 7h6v10H9V7z"/><path d="M9 1v3h6V1H9z"/></svg>
+          Protection API
+        </h3>
+        <p class="desc">Activez ou désactivez la protection par clé API pour votre endpoint.</p>
+        <div class="setting" style="margin-top: 12px;">
+          <div>
+            <div class="s-title">État de la protection</div>
+            <div class="s-desc" id="api-protection-status">Chargement...</div>
+          </div>
+          <div>
+            <button class="btn btn-primary" id="enable-protection" onclick="enableProtection()" style="margin-right: 8px;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              Activer
+            </button>
+            <button class="btn btn-ghost" id="disable-protection" onclick="disableProtection()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+              Désactiver
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/><path d="M9 7h6v10H9V7z"/><path d="M9 1v3h6V1H9z"/></svg>
+          Clés existantes
+        </h3>
+        <p class="desc">Liste des clés API actuellement configurées.</p>
+        <div id="api-keys-list" style="margin-top: 12px;">
+          <span style="color:var(--faint)">Chargement...</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/><path d="M12 5a7 7 0 0 1 7 7 7 7 0 0 1-7 7 7 7 0 0 1-7-7 7 7 0 0 1 7-7z"/></svg>
+          Créer une nouvelle clé
+        </h3>
+        <p class="desc">Générez une nouvelle clé API avec un nom descriptif.</p>
+        <div style="margin-top: 16px;">
+          <div class="setting">
+            <div>
+              <div class="s-title">Nom de la clé (optionnel)</div>
+              <div class="s-desc">Un nom pour identifier cette clé (ex: "Mon Appareil", "Cursor")</div>
+            </div>
+          </div>
+          <div style="margin-top: 12px; display: flex; gap: 8px; align-items: flex-start;">
+            <input type="text" id="new-key-name" placeholder="Nom de la clé..." class="input" style="flex: 1; max-width: 400px; margin-bottom: 0;">
+            <button class="btn btn-primary" onclick="createNewKey()" style="flex-shrink: 0; white-space: nowrap;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;"><path d="M12 5v14M5 12h14"/><path d="M12 5a7 7 0 0 1 7 7 7 7 0 0 1-7 7 7 7 0 0 1-7-7 7 7 0 0 1 7-7z"/></svg>
+              <span style="margin-left: 4px;">Nouvelle clé</span>
+            </button>
+          </div>
+          <div id="new-key-result" style="margin-top: 12px; display: none;">
+            <div class="endpoint-box" style="margin-bottom: 8px;">
+              <code id="new-key-value"></code>
+              <button class="btn-ghost btn-sm" type="button" onclick="copyNewKey()">Copier</button>
+            </div>
+            <div style="color: var(--warn); font-size: 13px;">
+              ⚠️ Copiez cette clé maintenant, elle ne sera plus affichée après !
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 16px; background: var(--bg-soft);">
+        <h3 style="color: var(--faint);">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+          Utilisation
+        </h3>
+        <p class="desc" style="color: var(--faint);">
+          Pour utiliser une clé API, ajoutez l'en-tête HTTP suivant à vos requêtes :<br>
+          <code style="background: var(--bg); padding: 2px 6px; border-radius: 4px; margin-top: 8px; display: inline-block;">Authorization: Bearer &lt;votre_clé_api&gt;</code>
+        </p>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin.js"></script>
+<script>
+// Fonctions spécifiques pour la gestion des clés API
+function loadApiKeys() {
+  fetch('/api-keys')
+    .then(r => r.json())
+    .then(data => {
+      const listEl = document.getElementById('api-keys-list');
+      const configEl = document.getElementById('api-protection-status');
+      
+      // Mettre à jour le statut de protection
+      if (data.require_auth) {
+        configEl.textContent = 'ACTIVE - ' + data.api_keys.length + ' clé(s) configurée(s)';
+        configEl.style.color = 'var(--success)';
+      } else {
+        configEl.textContent = 'DÉSACTIVÉE - Aucune clé configurée';
+        configEl.style.color = 'var(--warn)';
+      }
+      
+      // Mettre à jour la liste des clés
+      if (data.api_keys.length === 0) {
+        listEl.innerHTML = '<span style="color:var(--faint)">Aucune clé API configurée.</span>';
+        return;
+      }
+      
+      let html = '<div class="api-keys-grid">';
+      data.api_keys.forEach(key => {
+        const maskedKey = key.key ? key.key.substring(0, 8) + '...' + key.key.substring(key.key.length - 4) : 'N/A'
+        html += `
+          <div class="api-key-item" data-key-id="${key.id}">
+            <div class="key-info">
+              <div class="key-name">${key.name || '<em style="color:var(--faint)">Sans nom</em>'}</div>
+              <div class="key-id" style="font-size: 12px; color: var(--faint);">ID: ${key.id}</div>
+              <div class="key-created" style="font-size: 11px; color: var(--faint);">Créée: ${key.created_at}</div>
+              <div class="key-value" style="font-size: 11px; color: var(--faint); margin-top: 4px; font-family: var(--mono);">${maskedKey}</div>
+            </div>
+            <div class="key-actions">
+              <button class="btn btn-ghost btn-sm" onclick="copyKey('${key.id}')" style="margin-right: 8px;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="2" ry="2"/></svg>
+                Copier
+              </button>
+              <button class="btn btn-ghost btn-sm" onclick="deleteKey('${key.id}')" style="color: var(--error);">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Supprimer
+              </button>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      listEl.innerHTML = html;
+    })
+    .catch(err => {
+      console.error('Erreur de chargement des clés API:', err);
+      document.getElementById('api-keys-list').innerHTML = '<span style="color:var(--error)">Erreur de chargement</span>';
+    });
+}
+
+function createNewKey() {
+  const name = document.getElementById('new-key-name').value || '';
+  
+  fetch('/api-keys', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok && data.api_key) {
+      // Afficher la nouvelle clé
+      document.getElementById('new-key-value').textContent = data.api_key;
+      document.getElementById('new-key-result').style.display = 'block';
+      document.getElementById('new-key-name').value = '';
+      
+      // Copier automatiquement dans le presse-papiers
+      copyNewKey();
+      
+      // Recharger la liste
+      loadApiKeys();
+    } else {
+      alert('Erreur: ' + (data.error?.message || 'Impossible de créer la clé'));
+    }
+  })
+  .catch(err => {
+    console.error('Erreur:', err);
+    alert('Erreur de création de la clé API');
+  });
+}
+
+function copyNewKey() {
+  const key = document.getElementById('new-key-value').textContent;
+  if (key) {
+    navigator.clipboard.writeText(key).then(() => {
+      // Remplacer le bouton Copier par un message de confirmation
+      const copyBtn = document.querySelector('#new-key-result .btn-ghost');
+      if (copyBtn) {
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;"><path d="M20 6L9 17l-5-5"/></svg> Copié !';
+        copyBtn.style.color = 'var(--success)';
+        copyBtn.onclick = null;
+        setTimeout(() => {
+          copyBtn.innerHTML = 'Copier';
+          copyBtn.style.color = '';
+          copyBtn.onclick = copyNewKey;
+        }, 2000);
+      }
+    }).catch(() => {
+      alert('Impossible de copier. Veuillez copier manuellement : ' + key);
+    });
+  }
+}
+
+function copyKey(keyId) {
+  fetch('/api-keys')
+    .then(r => r.json())
+    .then(data => {
+      const key = data.api_keys.find(k => k.id === keyId);
+      if (key && key.key) {
+        navigator.clipboard.writeText(key.key).then(() => {
+          // Trouver le bouton Copier et le remplacer temporairement
+          const copyBtn = document.querySelector(`[onclick="copyKey('${keyId}')"]`);
+          if (copyBtn) {
+            const originalHTML = copyBtn.innerHTML;
+            copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 16px; height: 16px;"><path d="M20 6L9 17l-5-5"/></svg> Copié !';
+            copyBtn.style.color = 'var(--success)';
+            copyBtn.onclick = null;
+            setTimeout(() => {
+              copyBtn.innerHTML = originalHTML;
+              copyBtn.style.color = '';
+              copyBtn.onclick = () => copyKey(keyId);
+            }, 2000);
+          }
+        }).catch(() => {
+          alert('Impossible de copier. Veuillez copier manuellement : ' + key.key);
+        });
+      } else {
+        alert('Clé introuvable');
+      }
+    })
+    .catch(err => {
+      console.error('Erreur:', err);
+      alert('Impossible de récupérer la clé');
+    });
+}
+
+function deleteKey(keyId) {
+  if (!confirm('Êtes-vous sûr de vouloir supprimer cette clé API ?')) {
+    return;
+  }
+  
+  fetch('/api-keys/' + keyId, {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      loadApiKeys();
+    } else {
+      alert('Erreur: ' + (data.error?.message || 'Impossible de supprimer la clé'));
+    }
+  })
+  .catch(err => {
+    console.error('Erreur:', err);
+    alert('Erreur de suppression de la clé API');
+  });
+}
+
+function enableProtection() {
+  fetch('/api-keys/enable', {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      loadApiKeys();
+      if (data.api_key) {
+        alert('Protection activée ! Nouvelle clé par défaut créée: ' + data.api_key + '\n\nCopiez-la maintenant !');
+      } else {
+        alert('Protection déjà active !');
+      }
+    } else {
+      alert('Erreur: ' + (data.error?.message || 'Impossible d\'activer la protection'));
+    }
+  })
+  .catch(err => {
+    console.error('Erreur:', err);
+    alert('Erreur d\'activation de la protection');
+  });
+}
+
+function disableProtection() {
+  if (!confirm('Êtes-vous sûr de vouloir désactiver la protection API ? Les requêtes ne nécessiteront plus de clé.')) {
+    return;
+  }
+  
+  fetch('/api-keys/disable', {
+    method: 'POST'
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      loadApiKeys();
+      alert('Protection désactivée. Les clés existantes sont conservées.');
+    } else {
+      alert('Erreur: ' + (data.error?.message || 'Impossible de désactiver la protection'));
+    }
+  })
+  .catch(err => {
+    console.error('Erreur:', err);
+    alert('Erreur de désactivation de la protection');
+  });
+}
+
+// Charger les clés au démarrage
+loadApiKeys();
+
+// Rafraîchir périodiquement
+setInterval(loadApiKeys, 10000);
+</script>
+
+<style>
+.api-keys-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.api-key-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-soft);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.api-key-item:hover {
+  background: var(--bg-hover);
+}
+
+.key-info {
+  flex: 1;
+}
+
+.key-name {
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.key-actions {
+  margin-left: 16px;
+}
+
+#new-key-result {
+  padding: 12px;
+  background: var(--bg-soft);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+</style>
+</body>
+</html>

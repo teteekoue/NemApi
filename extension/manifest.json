@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "NemApi",
+  "version": "1.0.0",
+  "description": "Local OpenAI-compatible API bridge for DeepSeek, Qwen, Claude and Gemini via Firefox DOM automation.",
+
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs",
+    "activeTab"
+  ],
+
+  "host_permissions": [
+    "*://chat.deepseek.com/*",
+    "*://chat.qwen.ai/*",
+    "*://claude.ai/*",
+    "*://gemini.google.com/*",
+    "http://127.0.0.1:8080/*",
+    "http://localhost:8080/*"
+  ],
+
+  "background": {
+    "scripts": ["background.js"]
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chat.deepseek.com/*",
+        "*://chat.qwen.ai/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*"
+      ],
+      "js": [
+        "providers/base.js",
+        "providers/deepseek.js",
+        "providers/qwen.js",
+        "providers/claude.js",
+        "providers/gemini.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_title": "NemApi Admin",
+    "default_icon": {
+      "16": "icons/logo.svg",
+      "48": "icons/logo.svg",
+      "128": "icons/logo.svg"
+    }
+  },
+
+  "icons": {
+    "16": "icons/logo.svg",
+    "48": "icons/logo.svg",
+    "128": "icons/logo.svg"
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "nemapi@local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Configuration</title>
+<link rel="stylesheet" href="/admin.css">
+<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<button class="menu-btn" aria-label="Menu" type="button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div>
+        <div class="name">NemApi</div>
+        <div class="tag">Pont API local</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Tableau de bord
+      </a>
+      <a href="/config" class="active">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configuration
+      </a>
+      <a href="/api-keys-page" id="api-keys-link">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        <span>Clés API</span>
+        <span id="api-keys-badge" style="margin-left: 4px; font-size: 10px; padding: 2px 4px; border-radius: 4px; display: none;"></span>
+      </a>
+      <a href="/chat">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat test
+      </a>
+      <a href="/analytics">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Analytics
+      </a>
+    </nav>
+    <div class="side-foot">
+      <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
+      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Configuration</h1>
+          <div class="sub">Onglets fournisseurs, modèles et paramètres du proxy.</div>
+        </div>
+        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          Onglets fournisseurs
+        </h3>
+        <p class="desc">Choisis l'onglet Firefox à utiliser pour chaque service. Aucun basculement automatique vers un autre provider.</p>
+        <div id="cfg-providers" class="providers"><span style="color:var(--faint)">Chargement…</span></div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Modèles acceptés
+          </h3>
+          <p class="desc">Identifiants reconnus par le proxy (aliases inclus côté API).</p>
+          <div id="cfg-models"></div>
+        </div>
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Paramètres
+          </h3>
+          <p class="desc">Comportement du proxy et contrôle des jobs.</p>
+          <div class="setting">
+            <div>
+              <div class="s-title">Streaming (SSE)</div>
+              <div class="s-desc">Réponses en flux pour les clients qui le supportent.</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-stream"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="s-title">Auto-configuration</div>
+              <div class="s-desc">Associe automatiquement le premier onglet détecté par provider.</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-auto-config" checked><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="s-title">Nouvelle discussion à chaque requête</div>
+              <div class="s-desc">Après chaque réponse, recharge l'URL « new chat » du provider (pas de sélecteurs UI). Évite l'empilement de contexte web avec les agents.</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-fresh-chat" checked><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="s-title">Markdown premium</div>
+              <div class="s-desc">Extraction React / clipboard / HTML→MD (sans clic physique). Meilleure qualité de code et formatage pour les agents.</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-premium-md" checked><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div>
+              <div class="s-title">Arrêter les jobs</div>
+              <div class="s-desc">Annule toutes les requêtes en attente ou en cours.</div>
+            </div>
+            <button class="btn-danger btn-sm" id="cfg-stop" type="button">Arrêter</button>
+          </div>
+          <div class="hint" style="margin-top:14px">
+            Active « Nouvelle discussion » pour les agents de coding : le client envoie déjà tout le contexte, l'UI web ne doit pas le doubler.
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin.js"></script>
+<script>
+let catalog = [];
+
+function renderCfgProviders(state) {
+  const byProvider = {};
+  for (const tab of state.tabs || []) (byProvider[tab.provider] ||= []).push(tab);
+  $("cfg-providers").innerHTML = catalog
+    .map((p) => {
+      const tabs = byProvider[p.id] || [];
+      const selected = state.targetTabs?.[p.id];
+      const color = PCOLORS[p.id] || "var(--blue)";
+      if (!tabs.length) {
+        return `<div class="provider" style="--pcolor:${color}">
+          <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge no">Hors ligne</span></div>
+          <div class="purl">Ouvre un onglet ${esc(p.id)} dans Firefox et recharge l'extension.</div>
+        </div>`;
+      }
+      return tabs
+        .map(
+          (tab) => `<div class="provider" style="--pcolor:${color}">
+        <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge ${selected === tab.id ? "ok" : "no"}">${selected === tab.id ? "Actif" : "Disponible"}</span></div>
+        <div class="purl" title="${esc(tab.url)}">${esc(tab.title || tab.url)}</div>
+        <button type="button" class="${selected === tab.id ? "btn-chosen" : "btn-ghost"} btn-sm" onclick="choose('${p.id}',${tab.id})">${selected === tab.id ? "Sélectionné" : "Utiliser cet onglet"}</button>
+      </div>`
+        )
+        .join("");
+    })
+    .join("");
+}
+
+function renderCfgModels() {
+  $("cfg-models").innerHTML = catalog
+    .map(
+      (p) => `
+    <div style="margin-bottom:14px">
+      <div style="font-weight:750;text-transform:capitalize;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+        <span class="pdot" style="width:9px;height:9px;border-radius:50%;background:${PCOLORS[p.id] || "var(--blue)"};display:inline-block"></span>
+        ${esc(p.display_name || p.id)}
+      </div>
+      <div class="model-list">${(p.models || []).map((m) => `<span class="model-chip">${esc(m)}</span>`).join("") || '<span class="model-chip">—</span>'}</div>
+    </div>`
+    )
+    .join("");
+}
+
+async function choose(provider, tabId) {
+  try {
+    await api("/extension/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, targetTabId: tabId }),
+    });
+    refresh();
+  } catch (e) {
+    alert("Erreur : " + e.message);
+  }
+}
+
+async function refresh() {
+  try {
+    const [providers, state, config] = await Promise.all([
+      api("/providers"),
+      api("/extension/state"),
+      api("/settings"),
+    ]);
+    if (!catalog.length) {
+      catalog = providers.providers.map((p) => ({
+        id: p.id,
+        models: p.models,
+        display_name: p.display_name,
+      }));
+      renderCfgModels();
+    }
+    setConn(!!state.connected, !!state.busy);
+    renderCfgProviders(state);
+    if ($("cfg-stream")) $("cfg-stream").checked = !!config.stream_enabled;
+    if ($("cfg-auto-config")) $("cfg-auto-config").checked = !!config.auto_config;
+    if ($("cfg-fresh-chat")) $("cfg-fresh-chat").checked = config.fresh_chat !== false;
+    if ($("cfg-premium-md")) $("cfg-premium-md").checked = config.premium_md !== false;
+  } catch (e) {
+    setConn(false, false);
+    if ($("sconn")) $("sconn").textContent = "Proxy inaccessible : " + e.message;
+    if ($("hconn")) $("hconn").textContent = "Proxy inaccessible";
+  }
+}
+
+$("cfg-stream").addEventListener("change", async (e) => {
+  try {
+    await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stream_enabled: e.target.checked }),
+    });
+  } catch (err) {
+    alert("Erreur : " + err.message);
+  }
+});
+$("cfg-auto-config").addEventListener("change", async (e) => {
+  try {
+    await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto_config: e.target.checked }),
+    });
+  } catch (err) {
+    alert("Erreur : " + err.message);
+  }
+});
+$("cfg-fresh-chat").addEventListener("change", async (e) => {
+  try {
+    await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fresh_chat: e.target.checked }),
+    });
+  } catch (err) {
+    alert("Erreur : " + err.message);
+  }
+});
+$("cfg-premium-md").addEventListener("change", async (e) => {
+  try {
+    await api("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ premium_md: e.target.checked }),
+    });
+  } catch (err) {
+    alert("Erreur : " + err.message);
+  }
+});
+$("cfg-stop").addEventListener("click", async () => {
+  try {
+    await api("/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    refresh();
+  } catch (err) {
+    alert("Erreur : " + err.message);
+  }
+});
+
+async function updateApiKeysBadge() {
+  try {
+    const res = await fetch('/api-keys/config');
+    if (res.ok) {
+      const data = await res.json();
+      const badge = document.getElementById('api-keys-badge');
+      const link = document.getElementById('api-keys-link');
+      
+      if (badge) {
+        badge.style.display = 'inline';
+        if (data.require_auth) {
+          badge.textContent = data.key_count || 0;
+          badge.style.background = 'var(--success)';
+          badge.style.color = 'white';
+        } else {
+          badge.textContent = 'OFF';
+          badge.style.background = 'var(--warn)';
+          badge.style.color = 'black';
+        }
+      }
+    }
+  } catch (e) {
+    console.log('Impossible de vérifier les clés API:', e);
+  }
+}
+
+window.choose = choose;
+refresh();
+setInterval(refresh, 1500);
+updateApiKeysBadge();
+setInterval(updateApiKeysBadge, 10000);
+</script>
+</body>
+</html>

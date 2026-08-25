@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Analytics</title>
+<link rel="stylesheet" href="/admin.css">
+<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+</head>
+<body>
+<button class="menu-btn" aria-label="Menu" type="button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+</button>
+<div class="sidebar-overlay"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div>
+        <div class="name">NemApi</div>
+        <div class="tag">Pont API local</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <a href="/">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        Tableau de bord
+      </a>
+      <a href="/config">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Configuration
+      </a>
+      <a href="/chat">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat test
+      </a>
+      <a href="/analytics" class="active">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        Analytics
+      </a>
+    </nav>
+    <div class="side-foot">
+      <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
+      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+      <div class="page-head">
+        <div>
+          <h1>Analytics</h1>
+          <div class="sub">Requêtes, tokens et coûts estimés par fournisseur.</div>
+        </div>
+        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+      </div>
+
+      <div class="grid g4" style="margin-bottom:16px">
+        <div class="stat" style="--accent:var(--grad);--accent-soft:rgba(96,165,250,.12)">
+          <div class="head"><span class="label">Requêtes</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
+          <div class="value" id="total-requests">0</div>
+          <div class="trend">toutes sources</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#22d3ee,#60a5fa);--accent-soft:rgba(34,211,238,.12)">
+          <div class="head"><span class="label">Tokens</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
+          <div class="value" id="total-tokens">0</div>
+          <div class="trend" id="token-breakdown">0 + 0</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#34d399,#22d3ee);--accent-soft:rgba(52,211,153,.12)">
+          <div class="head"><span class="label">Coût estimé</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
+          <div class="value" id="total-cost">$0.00</div>
+          <div class="trend">USD approximatif</div>
+        </div>
+        <div class="stat" style="--accent:linear-gradient(135deg,#fbbf24,#f87171);--accent-soft:rgba(251,191,36,.12)">
+          <div class="head"><span class="label">Uptime</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span></div>
+          <div class="value" id="uptime-display">0s</div>
+          <div class="trend">proxy actif</div>
+        </div>
+      </div>
+
+      <div class="grid g2" style="margin-bottom:16px">
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+            Répartition des requêtes
+          </h3>
+          <p class="desc">Part relative de chaque fournisseur.</p>
+          <div id="distribution-chart"></div>
+        </div>
+        <div class="card">
+          <h3>
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            Détail par provider
+          </h3>
+          <p class="desc">Tokens et coût estimé.</p>
+          <div id="provider-stats"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          Système
+        </h3>
+        <div class="grid g2" style="gap:12px">
+          <div class="setting" style="border:none;padding:8px 0">
+            <div class="s-title">Auto-configuration</div>
+            <div class="s-desc" id="auto-config-status">—</div>
+          </div>
+          <div class="setting" style="border:none;padding:8px 0">
+            <div class="s-title">Version</div>
+            <div class="s-desc">NemApi v3.0 · 4 providers</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/admin.js"></script>
+<script>
+function fmtCost(cost) {
+  return "$" + (cost || 0).toFixed(4);
+}
+
+function renderDistribution(stats) {
+  const el = $("distribution-chart");
+  const providers = Object.entries(stats.providers || {});
+  const total = stats.total_requests || 0;
+  if (!total) {
+    el.innerHTML = '<span style="color:var(--faint)">Aucune requête pour le moment</span>';
+    return;
+  }
+  el.innerHTML = providers
+    .map(([id, data]) => {
+      const pct = total ? (data.requests / total) * 100 : 0;
+      const color = PCOLORS[id] || "var(--blue)";
+      return `<div class="bar-row">
+        <div class="label" style="color:${color}">${esc(id)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="val">${pct.toFixed(0)}%</div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderProviderStats(stats) {
+  const el = $("provider-stats");
+  const providers = Object.entries(stats.providers || {});
+  if (!providers.length) {
+    el.innerHTML = '<span style="color:var(--faint)">—</span>';
+    return;
+  }
+  el.innerHTML = providers
+    .map(([id, data]) => {
+      const color = PCOLORS[id] || "var(--blue)";
+      const tokens = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
+      return `<div class="provider" style="--pcolor:${color};margin-bottom:10px">
+        <div class="head">
+          <span class="pname"><span class="pdot"></span>${esc(id)}</span>
+          <span class="badge ok">${fmtNum(data.requests)} req</span>
+        </div>
+        <div class="purl">${fmtNum(tokens)} tokens · ${fmtCost(data.cost)}</div>
+      </div>`;
+    })
+    .join("");
+}
+
+async function refresh() {
+  try {
+    const [state, stats, settings] = await Promise.all([
+      api("/extension/state"),
+      api("/stats"),
+      api("/settings"),
+    ]);
+    setConn(!!state.connected, !!state.busy);
+    const totalPrompt = stats.prompt_tokens || 0;
+    const totalCompletion = stats.completion_tokens || 0;
+    $("total-requests").textContent = fmtNum(stats.total_requests);
+    $("total-tokens").textContent = fmtNum(totalPrompt + totalCompletion);
+    $("token-breakdown").textContent = `${fmtNum(totalPrompt)} + ${fmtNum(totalCompletion)}`;
+    $("total-cost").textContent = fmtCost(stats.estimated_cost);
+    $("uptime-display").textContent = fmtUptime(stats.uptime_seconds);
+    $("auto-config-status").textContent = settings.auto_config ? "Activée" : "Désactivée";
+    renderDistribution(stats);
+    renderProviderStats(stats);
+  } catch (e) {
+    setConn(false, false);
+    if ($("sconn")) $("sconn").textContent = "Proxy inaccessible : " + e.message;
+    if ($("hconn")) $("hconn").textContent = "Proxy inaccessible";
+  }
+}
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>
