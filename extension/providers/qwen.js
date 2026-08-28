@@ -374,8 +374,15 @@
   function findSend() {
     const root = B.findComposerRoot();
     for (const s of SEND) {
-      const el = root.querySelector(s);
-      if (el && !el.disabled && el.getAttribute("aria-disabled") !== "true" && B.isVisible(el)) return el;
+      const nodes = root.querySelectorAll(s);
+      for (const el of nodes) {
+        if (!el || !B.isVisible(el)) continue;
+        if (B.isDisabled && B.isDisabled(el)) continue;
+        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
+        if (/stop|cancel|attach|upload|file|mic|voice/.test(label)) continue;
+        return el;
+      }
     }
     return B.findByText(["button", "[role='button']"], [/send/i, /submit/i], root);
   }
@@ -451,20 +458,26 @@
       await B.sleep(150);
     }
 
-    // Wait for Send to enable
-    let btn = null;
-    for (let i = 0; i < 20; i++) {
-      btn = findSend();
-      if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") break;
-      await B.sleep(100);
-      btn = null;
+    // Wait for Send to enable (shared helper when available)
+    let btn = B.waitForEnabledSend
+      ? await B.waitForEnabledSend(findSend, 3500)
+      : null;
+    if (!btn) {
+      for (let i = 0; i < 20; i++) {
+        btn = findSend();
+        if (btn && !(B.isDisabled && B.isDisabled(btn))) break;
+        await B.sleep(100);
+        btn = null;
+      }
     }
     if (btn) {
-      B.clickEl(btn);
-      return;
+      try {
+        btn.focus();
+      } catch (_) {}
+      if (B.clickEl(btn)) return;
     }
     B.pressEnter(input);
-    await B.sleep(60);
+    await B.sleep(80);
     B.pressEnter(input);
   }
 
@@ -472,8 +485,9 @@
     await B.sleep(900);
     await B.waitForNewResponse(getMessageEls, readMessageText, {
       timeout: 180000,
-      stableMs: 2200,
+      stableMs: 2400,
       previous,
+      newElTimeout: 25000,
     });
     const els = getMessageEls();
     const last = els.length ? els[els.length - 1] : null;

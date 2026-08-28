@@ -2,40 +2,57 @@
  * NemApi – DeepSeek adapter
  * Extracts clean markdown from the DOM (strips Copy/Download/JSON UI chrome)
  * and is compatible with coding agents.
+ *
+ * Updated for DeepSeek UI changes (2025–2026): more reliable send-button
+ * detection (SVG path + aria-disabled wait) and virtual-list response handling.
  */
 (function (global) {
   "use strict";
   const B = global.NemApiBase;
 
   const INPUT = [
-    'textarea[role="textbox"]',
+    "textarea#chat-input",
     'textarea[placeholder*="DeepSeek" i]',
     'textarea[placeholder*="Message DeepSeek" i]',
-    'textarea[placeholder*="发送"]',
-    "textarea#chat-input",
+    'textarea[placeholder*="发送" i]',
+    'textarea[placeholder*="Message" i]',
+    'textarea[role="textbox"]',
+    ".ds-textarea textarea",
     "textarea[data-testid*='chat' i]",
     "div[contenteditable='true'][role='textbox']",
     "div[contenteditable='true']",
-    ".ds-textarea textarea",
     "textarea",
   ];
 
-  const SEND = [
+  // Broad CSS candidates; real filtering happens in isSendButton()
+  const SEND_CANDIDATES = [
+    '[role="button"].ds-icon-button',
+    "button.ds-icon-button",
+    '[role="button"].ds-button--primary',
+    "button.ds-button--primary",
+    '[role="button"].ds-button--circle',
+    "button.ds-button--circle",
+    '[role="button"][class*="_52c986b"]',
+    "button[class*='_52c986b']",
+    '[role="button"][class*="_7436101"]',
+    "div[role='button'][aria-disabled]",
     'button[type="submit"]',
     'button[aria-label*="Send" i]',
     '[role="button"][aria-label*="Send" i]',
-    "button.ds-icon-button",
-    "button.ds-button--primary",
-    '[role="button"].ds-button--circle',
     "button[class*='send']",
+    '[role="button"]',
+    "button",
   ];
 
   const MESSAGE = [
     "[data-virtual-list-item-key] .ds-message",
     ".ds-message",
     "[class*='ds-message']",
-    "[class*='message']",
   ];
+
+  // Known send-icon SVG path fragments (paper-plane / arrow) used by DeepSeek
+  const SEND_SVG_PATH_RE =
+    /M8\.3125|M13\.12\s*19\.98|M12\s*5\.25|paper|send|arrow/i;
 
   const UI_NOISE_RE = new RegExp(
     [
@@ -122,7 +139,11 @@
       .filter((line) => {
         const s = line.trim();
         if (!s) return true;
-        if (/^(Copy|Copied|Download|JSON|Think|Thinking|Regenerate|Retry|Share|Stop|Edit|Like|Dislike|Report|复制|下载|重新生成)$/i.test(s)) {
+        if (
+          /^(Copy|Copied|Download|JSON|Think|Thinking|Regenerate|Retry|Share|Stop|Edit|Like|Dislike|Report|复制|下载|重新生成)$/i.test(
+            s
+          )
+        ) {
           return false;
         }
         if (/^(Copy|Download|JSON)\s*[:：.]?\s*$/i.test(s)) return false;
@@ -224,22 +245,115 @@
     return B.queryFirst(INPUT);
   }
 
-  function findSend(near) {
-    const root = B.findComposerRoot(near);
-    const btn = B.findByText(SEND, [/send/i, /^go$/i, /submit/i], root);
-    if (btn && btn.getAttribute("aria-disabled") !== "true" && !btn.disabled) return btn;
-    for (const s of SEND) {
-      const nodes = root.querySelectorAll(s);
-      for (const n of nodes) {
-        const label = `${n.getAttribute("aria-label") || ""} ${n.title || ""} ${(n.innerText || n.textContent || "")}`.toLowerCase();
-        if (n.getAttribute("aria-disabled") === "true") continue;
-        if (n.disabled) continue;
-        if (/stop|cancel|attach|upload|file/.test(label)) continue;
-        if (!B.isVisible(n)) continue;
-        return n;
-      }
+  function isVisible(el) {
+    return B.isVisible(el);
+  }
+
+  function isDisabled(el) {
+    if (B.isDisabled) return B.isDisabled(el);
+    if (!el) return true;
+    if (el.getAttribute("aria-disabled") === "true") return true;
+    if (el.disabled) return true;
+    const cls = (el.className && String(el.className)) || "";
+    if (/\bdisabled\b/i.test(cls)) return true;
+    return false;
+  }
+
+  /**
+   * Decide whether a candidate is the real Send button (not attach / stop / mic…).
+   */
+  function isSendButton(el) {
+    if (!el || !isVisible(el) || isDisabled(el)) return false;
+
+    const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""} ${
+      el.innerText || el.textContent || ""
+    }`.toLowerCase();
+
+    // Explicit reject list
+    if (
+      /stop|cancel|attach|upload|file|camera|image|voice|microphone|mic|plus|添加|附件|上传|图片|语音|停止|中止/.test(
+        label
+      )
+    ) {
+      return false;
     }
-    return B.findByText(["button", "[role='button']"], [/send/i, /submit/i, /chat/i], root);
+    if (el.classList && el.classList.contains("ds-toggle-button")) return false;
+    if (el.classList && el.classList.contains("bds-plus-btn")) return false;
+
+    // Strong positive: SVG path that matches known DeepSeek send icon
+    const paths = el.querySelectorAll("svg path");
+    for (const p of paths) {
+      const d = p.getAttribute("d") || "";
+      if (SEND_SVG_PATH_RE.test(d)) return true;
+    }
+
+    // aria-label / title
+    if (/send|envoyer|发送|submit/i.test(label)) return true;
+
+    // Class-based heuristics used by recent DeepSeek builds
+    const cls = (el.className && String(el.className)) || "";
+    if (
+      (cls.includes("ds-icon-button") ||
+        cls.includes("ds-button--primary") ||
+        cls.includes("ds-button--circle") ||
+        cls.includes("_52c986b") ||
+        cls.includes("_7436101")) &&
+      !/attach|upload|file|plus/.test(cls)
+    ) {
+      // Prefer the one that is not a stop button and is near the composer
+      return true;
+    }
+
+    return false;
+  }
+
+  function findSend(near) {
+    const root = B.findComposerRoot(near) || document.body;
+
+    // 1) Prefer candidates inside the composer, reverse order (rightmost / latest)
+    const candidates = [];
+    for (const s of SEND_CANDIDATES) {
+      try {
+        root.querySelectorAll(s).forEach((n) => candidates.push(n));
+      } catch (_) {}
+    }
+    // Deduplicate while preserving reverse order preference
+    const seen = new Set();
+    const unique = [];
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const n = candidates[i];
+      if (seen.has(n)) continue;
+      seen.add(n);
+      unique.push(n);
+    }
+
+    for (const n of unique) {
+      if (isSendButton(n)) return n;
+    }
+
+    // 2) Global fallback with text patterns
+    const byText = B.findByText(
+      ["button", "[role='button']"],
+      [/send/i, /submit/i, /发送/],
+      root
+    );
+    if (byText && isSendButton(byText)) return byText;
+
+    return null;
+  }
+
+  /**
+   * Wait until the Send button becomes enabled after pasting text.
+   * Critical for 3rd+ messages where React state update can lag.
+   */
+  async function waitForEnabledSend(input, timeoutMs = 3500) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      const btn = findSend(input);
+      if (btn && !isDisabled(btn) && isVisible(btn)) return btn;
+      await B.sleep(80);
+    }
+    return findSend(input); // last attempt even if still looking disabled
   }
 
   function getLastResponse() {
@@ -249,37 +363,109 @@
   }
 
   function isGenerating() {
-    return !!(
-      document.querySelector('[class*="stop"]') ||
+    // Prefer explicit Stop button
+    const stop =
       document.querySelector('button[aria-label*="Stop" i]') ||
-      document.querySelector(".ds-loading, [class*='loading']")
-    );
+      document.querySelector('[role="button"][aria-label*="Stop" i]') ||
+      document.querySelector('[class*="stop"]');
+    if (stop && isVisible(stop)) return true;
+
+    // Loading indicators
+    if (
+      document.querySelector(".ds-loading, [class*='loading'], [class*='spinner']")
+    ) {
+      return true;
+    }
+    return false;
   }
 
   async function sendPrompt(text) {
-    const input = findInput() || (await B.waitFor(INPUT[0], 10000).catch(() => null));
+    const input =
+      findInput() || (await B.waitFor(INPUT[0], 12000).catch(() => null));
     if (!input) throw new Error("DeepSeek: input not found");
+
+    // Ensure focus and clear any residual selection
+    try {
+      input.focus();
+      input.click();
+    } catch (_) {}
+
     B.pasteText(input, text);
-    await B.sleep(180);
-    const btn = findSend(input);
-    if (btn) {
-      B.clickEl(btn);
-      return;
+
+    // Extra events some React builds need after the 2nd/3rd message
+    try {
+      input.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          inputType: "insertFromPaste",
+          data: String(text ?? ""),
+        })
+      );
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch (_) {}
+
+    // Give React time to enable the send control (critical on later turns)
+    await B.sleep(220);
+
+    let btn = await waitForEnabledSend(input, 3500);
+
+    if (btn && !isDisabled(btn)) {
+      // Prefer a trusted-looking click sequence
+      try {
+        btn.focus();
+      } catch (_) {}
+      const clicked = B.clickEl(btn);
+      if (clicked) {
+        // Verify that the input was cleared (message accepted) within a short window
+        await B.sleep(350);
+        const stillFull =
+          (input.value || input.textContent || "").trim().length >
+          Math.min(20, String(text).length * 0.6);
+        if (!stillFull) return; // success
+      }
     }
+
+    // Fallback 1: native Enter (works when "Enter to send" is enabled)
     B.pressEnter(input);
-    B.pressEnter(input);
+    await B.sleep(250);
+
+    // Fallback 2: try clicking again after Enter attempt
+    btn = findSend(input);
+    if (btn && !isDisabled(btn)) {
+      B.clickEl(btn);
+    }
   }
 
   async function waitForResponse(previous = "") {
-    await B.sleep(800);
+    await B.sleep(600);
+
+    // Phase 1: wait for generation to start (Stop button or new content)
+    const genStart = Date.now();
+    while (Date.now() - genStart < 12000) {
+      if (isGenerating()) break;
+      const els = getMessageEls();
+      const last = els.length ? readMessageText(els[els.length - 1]) : "";
+      if (last && last !== previous && last.length > (previous || "").length) {
+        break;
+      }
+      await B.sleep(250);
+    }
+
     await B.waitForNewResponse(getMessageEls, readMessageText, {
       timeout: 180000,
-      stableMs: 2200,
+      stableMs: 2400,
       previous,
+      newElTimeout: 25000,
     });
+
+    // Small extra settle time after stability for virtual list re-renders
+    await B.sleep(300);
+
     const els = getMessageEls();
     const last = els.length ? els[els.length - 1] : null;
     if (!last) return "";
+
     try {
       return await extractPremium(last);
     } catch (_) {
@@ -297,5 +483,4 @@
     isGenerating,
     findInput,
   };
-
 })(typeof window !== "undefined" ? window : self);

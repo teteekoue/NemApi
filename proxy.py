@@ -135,8 +135,11 @@ def load_config() -> Dict[str, Any]:
         }
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("config root must be an object")
+        return data
+    except (OSError, json.JSONDecodeError, ValueError) as e:
         add_log(f"Erreur de chargement de la config: {e}", "error")
         return {
             "api_keys": {},
@@ -155,7 +158,7 @@ def save_config(config: Dict[str, Any]):
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         add_log("Configuration sauvegardée")
-    except Exception as e:
+    except OSError as e:
         add_log(f"Erreur de sauvegarde de la config: {e}", "error")
 
 
@@ -178,7 +181,7 @@ def get_local_ip():
         local_ip = s.getsockname()[0]
         s.close()
         return local_ip
-    except Exception:
+    except OSError:
         return "127.0.0.1"
 
 
@@ -212,9 +215,14 @@ class Coordinator:
         # Suivi des jobs en cours par provider
         self.current_jobs: Dict[str, Optional[Job]] = {}
 
+    # Short window: protects against client retries only (OpenAI SDKs often
+    # retry on connection blip). 2.5s avoids collapsing intentional identical
+    # prompts sent a few seconds apart.
+    DEDUP_WINDOW_S = 2.5
+
     def create(self, question: str, provider: str, model: str) -> Job:
         """Enqueue a job. Reuse an in-flight identical job (same provider+question)
-        created < 8s ago so client retries do not double-fire the browser UI."""
+        created < DEDUP_WINDOW_S ago so client retries do not double-fire the UI."""
         with self.lock:
             now = time.time()
             for existing in self.jobs.values():
@@ -224,18 +232,17 @@ class Coordinator:
                     continue
                 if existing.question != question:
                     continue
-                if now - existing.start_time > 8.0:
+                if now - existing.start_time > self.DEDUP_WINDOW_S:
                     continue
                 add_log(f"Dedup: reuse job {existing.id[:8]} (identical in-flight request)")
                 return existing
             job = Job(question, provider, model)
             self.jobs[job.id] = job
-            
-            # Initialiser la file pour ce provider si elle n'existe pas
+
             if provider not in self.queues:
                 self.queues[provider] = []
             self.queues[provider].append(job)
-            
+
             return job
 
     def take(self) -> Optional[Job]:
@@ -363,7 +370,7 @@ def read_page(name: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "NemApi/2.0"
+    server_version = "NemApi/3.0"
 
     def log_message(self, _fmt, *_args):
         pass
@@ -446,16 +453,75 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api-keys-page":
             self._html(read_page("api-keys.html"))
         elif path == "/status":
-            self._json({"status": "ready" if extension_connected() else "waiting_extension", "extension": extension_connected()})
+            with ext_lock:
+                tabs = list(ext_state.get("tabs") or [])
+                target_tabs = dict(ext_state.get("targetTabs") or {})
+                recent_logs = list(ext_state.get("logs") or [])[-8:]
+                last_error = next(
+                    (e for e in reversed(recent_logs) if e.get("level") == "error"),
+                    None,
+                )
+            with coord.lock:
+                queue_sizes = {p: len(q) for p, q in coord.queues.items() if q}
+                active = {
+                    p: (j.id[:8] if j else None)
+                    for p, j in coord.current_jobs.items()
+                    if j is not None
+                }
+                pending_total = sum(len(q) for q in coord.queues.values())
+            connected = extension_connected()
+            providers_ready = {
+                p: (p in target_tabs and any(t.get("provider") == p for t in tabs))
+                for p in PROVIDERS
+            }
+            self._json({
+                "status": "ready" if connected else "waiting_extension",
+                "version": "3.0",
+                "extension": connected,
+                "uptime_seconds": int(time.time() - start_time),
+                "providers_ready": providers_ready,
+                "target_tabs": target_tabs,
+                "open_tabs": [
+                    {"id": t.get("id"), "provider": t.get("provider"), "title": (t.get("title") or "")[:60]}
+                    for t in tabs
+                ],
+                "jobs": {
+                    "pending": pending_total,
+                    "queues": queue_sizes,
+                    "active": active,
+                },
+                "api_keys_enabled": bool(app_config.get("api_keys")),
+                "settings": {
+                    "stream_enabled": stream_enabled,
+                    "fresh_chat": fresh_chat_enabled,
+                    "premium_md": premium_md_enabled,
+                    "auto_config": ext_state.get("autoConfig", True),
+                },
+                "last_error": last_error,
+            })
         elif path == "/stats":
             with stats_lock:
+                providers_out = {}
+                for name, pdata in stats["providers"].items():
+                    req = pdata.get("requests") or 0
+                    providers_out[name] = {
+                        **pdata,
+                        "avg_prompt_tokens": round((pdata.get("prompt_tokens") or 0) / req, 1) if req else 0,
+                        "avg_completion_tokens": round((pdata.get("completion_tokens") or 0) / req, 1) if req else 0,
+                        "cost": round(pdata.get("cost") or 0.0, 6),
+                    }
+                uptime = max(1, int(time.time() - start_time))
                 self._json({
-                    "uptime_seconds": int(time.time() - start_time),
+                    "version": "3.0",
+                    "uptime_seconds": uptime,
+                    "uptime_human": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
                     "total_requests": stats["requests"],
+                    "requests_per_minute": round(stats["requests"] / (uptime / 60), 2) if uptime >= 60 else stats["requests"],
                     "prompt_tokens": stats["prompt_tokens"],
                     "completion_tokens": stats["completion_tokens"],
-                    "estimated_cost": round(stats["estimated_cost"], 4),
-                    "providers": stats["providers"]
+                    "total_tokens": stats["prompt_tokens"] + stats["completion_tokens"],
+                    "estimated_cost": round(stats["estimated_cost"], 6),
+                    "providers": providers_out,
                 })
         elif path == "/settings":
             with ext_lock:
@@ -600,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._read_json()
-        except Exception as exc:
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             self._json({"error": {"message": f"Invalid JSON: {exc}", "type": "invalid_request"}}, 400)
             return
 
@@ -682,15 +748,19 @@ class Handler(BaseHTTPRequestHandler):
                 "premium_md": premium_md_enabled,
             })
         elif path == "/stop":
+            stopped = 0
             with coord.lock:
-                for job in coord.jobs.values():
+                for job in list(coord.jobs.values()):
                     if job.status in ("pending", "dispatched"):
                         job.status, job.error = "cancelled", "stopped"
                         job.event.set()
-                coord.queue.clear()
-                coord.current = None
-            add_log("All pending jobs stopped", "warn")
-            self._json({"ok": True})
+                        stopped += 1
+                for provider in list(coord.queues.keys()):
+                    coord.queues[provider].clear()
+                for provider in list(coord.current_jobs.keys()):
+                    coord.current_jobs[provider] = None
+            add_log(f"All pending jobs stopped ({stopped} cancelled)", "warn")
+            self._json({"ok": True, "cancelled": stopped})
         elif path == "/api-keys/enable":
             # Active la protection par clé API
             with config_lock:
@@ -1087,13 +1157,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
             try:
-                import socket
                 if hasattr(self, "request") and isinstance(self.request, socket.socket):
                     self.request.shutdown(socket.SHUT_WR)
-            except Exception:
+            except OSError:
                 pass
             self.close_connection = True
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
 
 

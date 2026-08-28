@@ -30,8 +30,15 @@
   function findSend() {
     const root = B.findComposerRoot();
     for (const s of SEND) {
-      const el = root.querySelector(s);
-      if (el && !el.disabled && el.getAttribute("aria-disabled") !== "true" && B.isVisible(el)) return el;
+      const nodes = root.querySelectorAll(s);
+      for (const el of nodes) {
+        if (!el || !B.isVisible(el)) continue;
+        if (B.isDisabled && B.isDisabled(el)) continue;
+        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
+        if (/stop|cancel|attach|upload|file/.test(label)) continue;
+        return el;
+      }
     }
     return B.findByText(["button", "[role='button']"], [/send/i, /submit/i], root);
   }
@@ -151,16 +158,32 @@
   }
 
   async function sendPrompt(text) {
-    const input = findInput() || (await B.waitFor('div.ProseMirror[contenteditable="true"]', 12000));
+    const input =
+      findInput() ||
+      (await B.waitFor('div.ProseMirror[contenteditable="true"]', 12000).catch(() => null));
     if (!input) throw new Error("Claude: input not found");
+    try {
+      input.focus();
+      input.click();
+    } catch (_) {}
     B.pasteText(input, text);
-    await B.sleep(180);
-    const btn = findSend();
-    if (btn) {
-      B.clickEl(btn);
-      return;
+    await B.sleep(220);
+    let btn = B.waitForEnabledSend
+      ? await B.waitForEnabledSend(findSend, 3500)
+      : findSend();
+    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
+      try {
+        btn.focus();
+      } catch (_) {}
+      if (B.clickEl(btn)) {
+        await B.sleep(300);
+        return;
+      }
     }
     B.pressEnter(input);
+    await B.sleep(200);
+    btn = findSend();
+    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
   }
 
   /**

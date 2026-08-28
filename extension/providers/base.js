@@ -221,11 +221,14 @@
   /**
    * Wait until text stabilizes (streaming finished).
    * getText() returns current assistant text; done when unchanged for stableMs.
+   * Virtual-list safe: ignores previous answer and truncated prefixes of it.
    */
   async function waitUntilStable(getText, { timeout = 180000, stableMs = 1800, pollMs = 400, previous = "" } = {}) {
     const t0 = Date.now();
     const prev = (previous || "").trim();
+    const prevFp = prev ? prev.length + ":" + prev.slice(0, 48) + ":" + prev.slice(-48) : "";
     let last = "";
+    let lastFp = "";
     let stableSince = Date.now();
     while (Date.now() - t0 < timeout) {
       if (global.__NEMAPI_STOP__) throw new Error("Stopped");
@@ -234,16 +237,25 @@
         cur = (getText() || "").trim();
       } catch (_) {}
       // Ignore the last answer that was already present before this job, and
-      // any partial render of it. Virtualized lists (DeepSeek) re-render old
-      // messages as a truncated prefix of the full text; without this guard a
-      // stale fragment is returned as the new response.
-      if (cur && prev && (cur === prev || (cur.length < prev.length && prev.startsWith(cur)))) {
-        cur = "";
+      // any partial render of it. Virtualized lists (DeepSeek/Qwen) re-render
+      // old messages as a truncated prefix of the full text.
+      if (cur && prev) {
+        if (cur === prev) cur = "";
+        else if (cur.length < prev.length && prev.startsWith(cur)) cur = "";
+        else if (prev.length < cur.length && cur.startsWith(prev) && cur.length - prev.length < 8) {
+          // still essentially the old message with trivial growth
+          cur = "";
+        } else {
+          const fp = cur.length + ":" + cur.slice(0, 48) + ":" + cur.slice(-48);
+          if (fp === prevFp) cur = "";
+        }
       }
-      if (cur && cur === last && cur.length > 0) {
+      const fp = cur ? cur.length + ":" + cur.slice(0, 48) + ":" + cur.slice(-48) : "";
+      if (cur && fp === lastFp && cur.length > 0) {
         if (Date.now() - stableSince >= stableMs) return cur;
       } else {
         last = cur;
+        lastFp = fp;
         stableSince = Date.now();
       }
       await sleep(pollMs);
@@ -256,35 +268,92 @@
     return arr && arr.length ? arr[arr.length - 1] : null;
   }
 
+  function textFingerprint(text) {
+    const t = (text || "").trim();
+    if (!t) return "";
+    return t.length + ":" + t.slice(0, 64) + ":" + t.slice(-64);
+  }
+
   /**
-   * Wait for a NEW assistant message element to appear (one that was not
-   * present before the request was sent), then wait for its text to stabilize.
-   * getMessageEls() must return assistant message elements in DOM order;
+   * Wait for a NEW assistant message (new DOM node OR new fingerprint on the
+   * last node — critical for virtualized lists that reuse elements).
+   * getMessageEls() returns assistant message elements in DOM order;
    * readText(el) extracts the assistant answer text from a message element.
-   * Falls back to text-based stability on the last element when no distinct
-   * new element is detected (e.g. virtual lists that reuse DOM nodes).
    */
-  async function waitForNewResponse(getMessageEls, readText, { timeout = 180000, stableMs = 2000, pollMs = 400, previous = "", newElTimeout = 20000 } = {}) {
-    const oldEl = lastOf(getMessageEls());
+  async function waitForNewResponse(getMessageEls, readText, { timeout = 180000, stableMs = 2000, pollMs = 400, previous = "", newElTimeout = 25000 } = {}) {
+    const oldEls = getMessageEls() || [];
+    const oldEl = lastOf(oldEls);
+    const oldCount = oldEls.length;
+    const oldFp = textFingerprint(previous || (oldEl ? readText(oldEl) : ""));
     const phase1End = Date.now() + newElTimeout;
     let newEl = null;
+    let sawNewContent = false;
+
     while (Date.now() < phase1End) {
       if (global.__NEMAPI_STOP__) throw new Error("Stopped");
-      const last = lastOf(getMessageEls());
+      const els = getMessageEls() || [];
+      const last = lastOf(els);
       if (last && last !== oldEl) {
         newEl = last;
         break;
       }
+      // Virtual list: same node, but message count grew or fingerprint changed
+      if (last && els.length > oldCount) {
+        newEl = last;
+        break;
+      }
+      if (last) {
+        let cur = "";
+        try {
+          cur = (readText(last) || "").trim();
+        } catch (_) {}
+        const fp = textFingerprint(cur);
+        if (fp && fp !== oldFp && cur.length > (previous || "").length * 0.5) {
+          sawNewContent = true;
+          newEl = last;
+          break;
+        }
+      }
       await sleep(pollMs);
     }
+
     const readLast = () => {
       const last = lastOf(getMessageEls());
       return last ? readText(last) : "";
     };
-    if (!newEl) {
+    if (!newEl && !sawNewContent) {
       return waitUntilStable(readLast, { timeout, stableMs, pollMs, previous });
     }
-    return waitUntilStable(() => readText(newEl), { timeout, stableMs, pollMs, previous });
+    const target = newEl;
+    return waitUntilStable(() => (target ? readText(target) : readLast()), {
+      timeout,
+      stableMs,
+      pollMs,
+      previous,
+    });
+  }
+
+  function isDisabled(el) {
+    if (!el) return true;
+    if (el.getAttribute("aria-disabled") === "true") return true;
+    if (el.disabled) return true;
+    const cls = (el.className && String(el.className)) || "";
+    if (/\bdisabled\b/i.test(cls)) return true;
+    return false;
+  }
+
+  /**
+   * Wait until a send button becomes enabled after pasting text.
+   * findSendFn() must return the current candidate button or null.
+   */
+  async function waitForEnabledSend(findSendFn, timeoutMs = 3500) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      const btn = findSendFn();
+      if (btn && !isDisabled(btn) && isVisible(btn)) return btn;
+      await sleep(80);
+    }
+    return findSendFn();
   }
 
   /* ------------------------------------------------------------------ */
@@ -735,6 +804,7 @@
     queryFirst,
     queryAll,
     isVisible,
+    isDisabled,
     textOf,
     findByText,
     findComposerRoot,
@@ -747,6 +817,8 @@
     pressEnter,
     waitUntilStable,
     waitForNewResponse,
+    waitForEnabledSend,
+    textFingerprint,
     getReactFiber,
     navigateFiberPath,
     extractReactMarkdown,

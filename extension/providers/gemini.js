@@ -40,8 +40,15 @@
   function findSend() {
     const root = B.findComposerRoot();
     for (const s of SEND) {
-      const el = root.querySelector(s);
-      if (el && !el.disabled && el.getAttribute("aria-disabled") !== "true" && B.isVisible(el)) return el;
+      const nodes = root.querySelectorAll(s);
+      for (const el of nodes) {
+        if (!el || !B.isVisible(el)) continue;
+        if (B.isDisabled && B.isDisabled(el)) continue;
+        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
+        if (/stop|cancel|attach|upload|file|mic|voice/.test(label)) continue;
+        return el;
+      }
     }
     return B.findByText(["button", "[role='button']"], [/send/i, /submit/i, /generate/i], root);
   }
@@ -128,15 +135,29 @@
         throw new Error("Gemini: input not found");
       }
     }
+    try {
+      input.focus();
+      input.click();
+    } catch (_) {}
     B.pasteText(input, text);
-    await B.sleep(180);
-    const btn = findSend();
-    if (btn) {
-      B.clickEl(btn);
-    } else {
-      const ed = document.querySelector(".ql-editor") || input;
-      B.pressEnter(ed);
+    await B.sleep(220);
+    let btn = B.waitForEnabledSend
+      ? await B.waitForEnabledSend(findSend, 3500)
+      : findSend();
+    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
+      try {
+        btn.focus();
+      } catch (_) {}
+      if (B.clickEl(btn)) {
+        await B.sleep(300);
+        return;
+      }
     }
+    const ed = document.querySelector(".ql-editor") || input;
+    B.pressEnter(ed);
+    await B.sleep(200);
+    btn = findSend();
+    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
   }
 
   async function extractPremium() {

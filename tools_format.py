@@ -76,12 +76,15 @@ def _decode_entities(s: str) -> str:
         return s
     try:
         return html.unescape(s)
-    except Exception:
+    except (ValueError, TypeError):
         return s
 
 
 def clean_assistant_text(text: str) -> str:
     """Sanitize DOM-extracted assistant text for agents and JSON transport.
+
+    Source of truth for final agent-facing cleanup (JS providers do a lighter
+    DOM-side pass; this function runs on the proxy after the browser returns).
 
     - Strips thinking / details blocks
     - Removes UI chrome lines and inline labels (outside code fences)
@@ -158,7 +161,7 @@ def serialize_tools_prompt(tools: Optional[List[Dict[str, Any]]]) -> str:
         desc = fn.get("description") or ""
         try:
             params = json.dumps(fn.get("parameters") or {}, ensure_ascii=False)
-        except Exception:
+        except (TypeError, ValueError):
             params = "{}"
         lines.append(f"- {name}: {desc}\n  parameters: {params}".rstrip())
     if not lines:
