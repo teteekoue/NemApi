@@ -192,53 +192,69 @@
   }
 
   /**
-   * Capture the same markdown the Copy button would write — without clicking.
-   * DeepSeek stores the original MD in React memoizedProps.markdown on .ds-markdown
-   * (see DeepSeek-Chat-Exporter). Thinking blocks use .ds-think-content — skip them.
+   * Fast path (same as the stable DeepSeek exporter):
+   *  1) React fiber props.markdown on .ds-markdown  — sync, complete MD
+   *  2) DOM htmlToMarkdown / readMessageText       — sync, complete text
+   *  3) Clipboard ONLY if both above are empty/weak — slow path, 1 attempt
+   * Never prefer clipboard when DOM/React already has the full answer.
    */
   async function extractPremium(msgEl) {
     if (!msgEl) return "";
 
-    // 1) React source markdown (primary — no click)
+    // Collect answer nodes (skip thinking chain)
     const answerNodes = [];
     msgEl.querySelectorAll("div.ds-markdown, .ds-markdown").forEach((el) => {
       if (el.closest(".ds-think-content, [class*='think'], .e1675d8b")) return;
       answerNodes.push(el);
     });
+
+    // 1) React source markdown — primary, no click, full content
     let best = "";
     for (const el of answerNodes) {
       const md = B.extractReactMarkdown(el, ["markdown", "content", "text"]);
       if (md && md.length > best.length) best = md;
     }
     if (!best && answerNodes[0]) {
-      // also try parent message fiber
       best = B.extractReactMarkdown(msgEl, ["markdown", "content", "text"]) || "";
     }
     if (best && best.length > 10) {
       return cleanResponse(best);
     }
 
-    // 2) Clipboard intercept only if React failed (may fail on isTrusted)
-    if (B.premiumEnabled()) {
-      const fromClip = await B.tryClipboardFromCopyButton(msgEl, [
-        'button[aria-label*="Copy" i]',
-        'button[aria-label*="复制"]',
-        "button.ds-icon-button",
-      ]);
-      if (fromClip && fromClip.length > 10 && fromClip !== "[object Object]") {
-        return cleanResponse(fromClip);
-      }
-    }
-
-    // 3) Structured HTML → MD on answer nodes only
+    // 2) Structured HTML → MD (sync, preserves code fences)
     const parts = [];
     for (const el of answerNodes) {
       const md = B.htmlToMarkdown(el);
       if (md) parts.push(md);
     }
-    if (parts.length) return cleanResponse(parts.join("\n\n"));
+    if (parts.length) {
+      const joined = cleanResponse(parts.join("\n\n"));
+      if (joined.length > 10) return joined;
+    }
 
-    return readMessageText(msgEl);
+    // 3) Plain DOM text (already strips think / UI chrome)
+    const fromDom = readMessageText(msgEl);
+    if (fromDom && fromDom.length > 10) return fromDom;
+
+    // 4) Clipboard last resort only — single attempt, scoped to this message
+    if (B.premiumEnabled()) {
+      try {
+        const fromClip = await B.tryClipboardFromCopyButton(
+          msgEl,
+          [
+            'button[aria-label*="Copy" i]',
+            'button[aria-label*="复制"]',
+            'button[title*="Copy" i]',
+          ],
+          { domAssistantText: fromDom }
+        );
+        if (fromClip && fromClip.length > 10 && fromClip !== "[object Object]") {
+          return cleanResponse(fromClip);
+        }
+      } catch (_) {}
+    }
+
+    return fromDom || "";
   }
 
   function findInput() {
@@ -362,6 +378,15 @@
     return "";
   }
 
+  /** Bubble count — used by content.js to detect a new answer even when text is identical. */
+  function getResponseCount() {
+    try {
+      return getMessageEls().length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   function isGenerating() {
     // Prefer explicit Stop button
     const stop =
@@ -437,30 +462,31 @@
     }
   }
 
-  async function waitForResponse(previous = "") {
-    await B.sleep(600);
+  async function waitForResponse(previous = "", prevCount = 0) {
+    await B.sleep(400);
 
-    // Phase 1: wait for generation to start (Stop button or new content)
+    // Phase 1: wait for generation to start (Stop button, new bubble, or new content)
     const genStart = Date.now();
-    while (Date.now() - genStart < 12000) {
+    while (Date.now() - genStart < 10000) {
       if (isGenerating()) break;
+      if (prevCount && getResponseCount() > prevCount) break;
       const els = getMessageEls();
       const last = els.length ? readMessageText(els[els.length - 1]) : "";
       if (last && last !== previous && last.length > (previous || "").length) {
         break;
       }
-      await B.sleep(250);
+      await B.sleep(200);
     }
 
     await B.waitForNewResponse(getMessageEls, readMessageText, {
       timeout: 180000,
-      stableMs: 2400,
-      previous,
-      newElTimeout: 25000,
+      stableMs: 1600,
+      previous: prevCount && getResponseCount() > prevCount ? "" : previous,
+      newElTimeout: 20000,
     });
 
-    // Small extra settle time after stability for virtual list re-renders
-    await B.sleep(300);
+    // Brief settle for virtual-list re-render (keep short for speed)
+    await B.sleep(150);
 
     const els = getMessageEls();
     const last = els.length ? els[els.length - 1] : null;
@@ -480,6 +506,7 @@
     sendPrompt,
     waitForResponse,
     getLastResponse,
+    getResponseCount,
     isGenerating,
     findInput,
   };

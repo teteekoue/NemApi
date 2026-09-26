@@ -853,3 +853,87 @@ pre {
   .card { padding: 16px; }
   .stat { padding: 14px; }
 }
+
+/* ========== Provider badges & icons ========== */
+.pbadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pbadge .picon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.pbadge .pname-text { letter-spacing: 0.01em; }
+.provider .head .pbadge { flex: 1; min-width: 0; }
+.provider {
+  border-left: 2px solid var(--pcolor, var(--blue));
+}
+.pricing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.pricing-table th,
+.pricing-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.pricing-table th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pricing-table td.num {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.token-split {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.token-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.token-chip strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.page-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-danger {
+  background: rgba(248,113,113,.12);
+  color: #fca5a5;
+  border: 1px solid rgba(248,113,113,.25);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-danger:hover { background: rgba(248,113,113,.2); }
+.ver { opacity: 0.85; }

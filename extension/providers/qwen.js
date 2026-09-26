@@ -1,7 +1,10 @@
 /**
  * NemApi – Qwen adapter
- * Code blocks: extract LINE BY LINE (Qwen highlighter collapses textContent).
- * Language label is read from header, never concatenated into body.
+ * Primary strategy: same path as the native Copy button (clipboard intercept via
+ * .copy-response-button) so structured content (code fences, indentation) is
+ * preserved exactly as the UI intends.
+ * Fallback: line-by-line DOM extraction (Qwen highlighter collapses textContent)
+ * + React fiber markdown when available.
  */
 (function (global) {
   "use strict";
@@ -28,6 +31,10 @@
 
   const MESSAGE = [
     ".qwen-chat-message-assistant",
+    ".chat-response-message",
+    "[class*='qwen-chat-message-assistant']",
+    "[class*='chat-response-message']",
+    "[class*='response-message']",
     "[class*='assistant'] [class*='message']",
     "[class*='assistant']",
   ];
@@ -87,11 +94,20 @@
 
   function pickContentRoot(msgEl) {
     if (!msgEl) return null;
-    const selectors = [".qwen-markdown", ".markdown-body", ".response-message-content", "[class*='markdown']"];
+    const selectors = [
+      ".response-message-content.phase-answer",
+      ".response-message-content",
+      ".qwen-markdown",
+      ".markdown-body",
+      ".response-message-body",
+      "[class*='response-message-content']",
+      "[class*='markdown']",
+    ];
     const candidates = [];
     for (const s of selectors) {
       msgEl.querySelectorAll(s).forEach((el) => {
-        if (el.closest("[class*='think'], [class*='reason'], [class*='reflect'], [class*='status-card']")) return;
+        if (el.closest("[class*='think'], [class*='reason'], [class*='reflect'], [class*='status-card'], [class*='thinking']"))
+          return;
         candidates.push(el);
       });
     }
@@ -353,18 +369,116 @@
     return cleanResponse(shell);
   }
 
+  /**
+   * Locate the message-level Copy control.
+   * Primary class used by chat.qwen.ai (see scrapeless / live UI): .copy-response-button
+   * Also match aria / title / text for resilience when class hashes change.
+   */
+  function findCopyButton(root) {
+    if (!root) root = document;
+    const sels = [
+      ".copy-response-button",
+      "button.copy-response-button",
+      '[class*="copy-response"]',
+      'button[aria-label*="Copy" i]',
+      'button[aria-label*="复制"]',
+      'button[title*="Copy" i]',
+      'button[title*="复制"]',
+      '[class*="copy"][role="button"]',
+      "button[class*='copy']",
+    ];
+    for (const s of sels) {
+      try {
+        const nodes = root.querySelectorAll(s);
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          const n = nodes[i];
+          if (!B.isVisible(n)) continue;
+          const label = (
+            (n.getAttribute("aria-label") || "") +
+            " " +
+            (n.title || "") +
+            " " +
+            (n.innerText || n.textContent || "")
+          ).toLowerCase();
+          // Prefer real copy controls; skip regenerate / like / etc.
+          if (/regenerat|retry|like|dislike|share|edit|stop|download|json|think/i.test(label)) continue;
+          if (s.includes("copy") || /copy|copier|复制|clipboard/.test(label)) return n;
+        }
+      } catch (_) {}
+    }
+    // Text-based last resort inside the message
+    return B.findByText
+      ? B.findByText(["button", "[role='button']"], [/copy/i, /copier/i, /复制/], root)
+      : null;
+  }
+
+  /**
+   * Clipboard path = same data the user gets when clicking Copy.
+   * MUST prefer clipboard when capture succeeds — DOM path loses indentation on Qwen.
+   * Filter known Qwen bug that sometimes writes "[object Object]".
+   */
   async function extractPremium(msgEl) {
     if (!msgEl) return "";
-    if (B.premiumEnabled()) {
-      const root = pickContentRoot(msgEl) || msgEl;
+    const fromDom = readMessageText(msgEl);
+
+    if (!B.premiumEnabled()) return fromDom;
+
+    // Ensure MAIN-world hook is live before clicking (CSP-safe path via background)
+    try {
+      if (B.ensurePageClipboardHook) B.ensurePageClipboardHook();
+    } catch (_) {}
+
+    const copyBtn = findCopyButton(msgEl);
+    const copyRoot = copyBtn
+      ? copyBtn.closest(
+          ".qwen-chat-message-assistant, .chat-response-message, [class*='message'], [class*='response']"
+        ) ||
+        copyBtn.parentElement ||
+        msgEl
+      : msgEl;
+
+    // Attempt clipboard up to 3× — first click may race with React mount of the footer
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const fromClip = await B.tryClipboardFromCopyButton(
+        copyRoot,
+        [
+          ".copy-response-button",
+          "button.copy-response-button",
+          '[class*="copy-response"]',
+          'button[aria-label*="Copy" i]',
+          'button[aria-label*="复制"]',
+          'button[title*="Copy" i]',
+          "button[class*='copy']",
+        ],
+        { domAssistantText: fromDom }
+      );
+      if (
+        fromClip &&
+        fromClip.length > 10 &&
+        fromClip !== "[object Object]" &&
+        !/^\[object\s+\w+\]$/i.test(fromClip.trim())
+      ) {
+        // Clipboard is the source of truth for structured content (code, lists, tables).
+        // Never demote it because DOM invented more ``` fences.
+        return cleanResponse(fromClip);
+      }
+      await B.sleep(180);
+    }
+
+    // React fiber (often holds original markdown)
+    const root = pickContentRoot(msgEl) || msgEl;
+    if (B.extractReactMarkdown) {
       const react = B.extractReactMarkdown(root, ["markdown", "content", "text", "source", "raw"]);
-      if (react && react.length > 20 && ((react.match(/\n/g) || []).length >= 2 || react.includes("```"))) {
+      if (
+        react &&
+        react.length > 20 &&
+        ((react.match(/\n/g) || []).length >= 2 || react.includes("```"))
+      ) {
         return cleanResponse(react);
       }
-      const fromDom = readMessageText(msgEl);
-      if (fromDom && fromDom.length > 10) return fromDom;
     }
-    return readMessageText(msgEl);
+
+    return fromDom || readMessageText(msgEl);
   }
 
   function findInput() {
@@ -481,6 +595,25 @@
     B.pressEnter(input);
   }
 
+  function isGenerating() {
+    // Stop button visible, or last assistant message still lacks a copy footer
+    if (
+      document.querySelector(
+        'button[aria-label*="Stop" i], button[aria-label*="停止"], [class*="stop-button"], [class*="stop-generating"]'
+      )
+    ) {
+      return true;
+    }
+    const els = getMessageEls();
+    if (!els.length) return false;
+    const last = els[els.length - 1];
+    // Stream finished once the per-message copy control is mounted
+    if (findCopyButton(last)) return false;
+    // Still streaming if content is short / changing and no copy yet
+    const t = (last.innerText || "").trim();
+    return t.length < 8 || !!document.querySelector('[class*="streaming"], [class*="generating"]');
+  }
+
   async function waitForResponse(previous = "") {
     await B.sleep(900);
     await B.waitForNewResponse(getMessageEls, readMessageText, {
@@ -492,6 +625,12 @@
     const els = getMessageEls();
     const last = els.length ? els[els.length - 1] : null;
     if (!last) return "";
+    // Give the action footer (.copy-response-button) time to mount after stream ends
+    for (let i = 0; i < 12; i++) {
+      if (findCopyButton(last)) break;
+      await B.sleep(200);
+    }
+    await B.sleep(250);
     try {
       return await extractPremium(last);
     } catch (_) {
@@ -500,12 +639,23 @@
   }
 
   global.NemApiProviders = global.NemApiProviders || {};
+
+  function getResponseCount() {
+    try {
+      return getMessageEls().length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   global.NemApiProviders.qwen = {
     id: "qwen",
     match: (url) => /chat\.qwen\.ai|qianwen\.com/i.test(url),
     sendPrompt,
     waitForResponse,
     getLastResponse,
+    getResponseCount,
+    isGenerating,
     findInput,
   };
 })(typeof window !== "undefined" ? window : self);

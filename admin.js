@@ -16,12 +16,48 @@ const fmtUptime = (s) => {
   if (m) return `${m}m ${sec}s`;
   return `${sec}s`;
 };
-const PCOLORS = {
-  deepseek: "#60a5fa",
-  qwen: "#22d3ee",
-  gemini: "#f87171",
-  claude: "#fbbf24",
+const fmtCost = (cost) => {
+  const c = Number(cost) || 0;
+  if (c === 0) return "$0.00";
+  if (c < 0.01) return "$" + c.toFixed(6);
+  if (c < 1) return "$" + c.toFixed(4);
+  return "$" + c.toFixed(2);
 };
+
+const PCOLORS = {
+  deepseek: "#4F8CFF",
+  qwen: "#22d3ee",
+  claude: "#F59E0B",
+  gemini: "#F87171",
+  chatgpt: "#10A37F",
+  kimi: "#A855F7",
+  zai: "#6366F1",
+};
+
+const PNAMES = {
+  deepseek: "DeepSeek",
+  qwen: "Qwen",
+  claude: "Claude",
+  gemini: "Gemini",
+  chatgpt: "ChatGPT",
+  kimi: "Kimi",
+  zai: "Z.ai",
+};
+
+function providerIcon(id) {
+  return `/icons/providers/${esc(id)}.png`;
+}
+
+function providerLabel(id) {
+  return PNAMES[id] || id;
+}
+
+function providerBadge(id, extraClass = "") {
+  return `<span class="pbadge ${extraClass}" style="--pcolor:${PCOLORS[id] || "var(--blue)"}">
+    <img class="picon" src="${providerIcon(id)}" alt="" width="18" height="18" onerror="this.style.display='none'">
+    <span class="pname-text">${esc(providerLabel(id))}</span>
+  </span>`;
+}
 
 async function api(path, options) {
   const res = await fetch(path, options);

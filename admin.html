@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Tableau de bord</title>
 <link rel="stylesheet" href="/admin.css">
-<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+<link rel="icon" href="/extension/icons/logo-32.png" type="image/png">
 </head>
 <body>
 <button class="menu-btn" aria-label="Menu" type="button">
@@ -16,7 +16,7 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div class="logo"><img src="/extension/icons/logo-48.png" alt="NemApi"></div>
       <div>
         <div class="name">NemApi</div>
         <div class="tag">Pont API local</div>
@@ -48,12 +48,12 @@
     <div class="side-section">Endpoint</div>
     <div style="padding:8px 6px 0">
       <div class="endpoint-box" style="font-size:11px;padding:8px 10px">
-        <code id="side-endpoint">http://127.0.0.1:8080/v1</code>
+        <code id="side-endpoint">http://127.0.0.1:8090/v1</code>
       </div>
     </div>
     <div class="side-foot">
       <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
-      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+      <div class="ver">NemApi v4.0 · 7 providers</div>
     </div>
   </aside>
 
@@ -97,8 +97,8 @@
         </h3>
         <p class="desc">Pointe tes agents (Qwen Code, Cursor, Continue…) vers cette base URL.</p>
         <div class="endpoint-box">
-          <code>http://127.0.0.1:8080/v1</code>
-          <button class="btn-ghost btn-sm" type="button" onclick="copyText('http://127.0.0.1:8080/v1')">Copier</button>
+          <code>http://127.0.0.1:8090/v1</code>
+          <button class="btn-ghost btn-sm" type="button" onclick="copyText('http://127.0.0.1:8090/v1')">Copier</button>
         </div>
       </div>
 
@@ -137,13 +137,13 @@ function renderDashProviders(state) {
     const ready = !!selected;
     const color = PCOLORS[p.id] || "var(--blue)";
     return `<div class="provider" style="--pcolor:${color}">
-      <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge ${ready ? "ok" : "no"}">${ready ? "Prêt" : "Inactif"}</span></div>
+      <div class="head">${providerBadge(p.id)}<span class="badge ${ready ? "ok" : "no"}">${ready ? "Prêt" : "Inactif"}</span></div>
       <div class="purl">${ready ? esc((tabs.find((t) => t.id === selected) || {}).title || "Onglet sélectionné") : "Aucun onglet connecté"}</div>
       <a class="btn-ghost btn-sm" style="display:block;text-align:center;text-decoration:none" href="/config">Configurer</a>
     </div>`;
   }).join("");
   const readyCount = catalog.filter((p) => state.targetTabs?.[p.id]).length;
-  $("st-ready").textContent = `${readyCount}/${catalog.length || 4}`;
+  $("st-ready").textContent = `${readyCount}/${catalog.length || 7}`;
 }
 
 async function refresh() {

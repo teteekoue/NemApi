@@ -1,34 +1,75 @@
 {
   "manifest_version": 3,
   "name": "NemApi",
-  "version": "3.0.1",
-  "description": "Local OpenAI-compatible API bridge for DeepSeek, Qwen, Claude and Gemini via Firefox DOM automation.",
+  "version": "4.0.0",
+  "description": "Local OpenAI-compatible API bridge for DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi and Z.ai via Chromium DOM automation.",
   "permissions": [
     "storage",
     "scripting",
     "tabs",
-    "activeTab"
+    "activeTab",
+    "clipboardRead",
+    "clipboardWrite",
+    "alarms"
   ],
   "host_permissions": [
     "*://chat.deepseek.com/*",
     "*://chat.qwen.ai/*",
+    "*://*.qwen.ai/*",
+    "*://qianwen.com/*",
+    "*://*.qianwen.com/*",
     "*://claude.ai/*",
     "*://gemini.google.com/*",
-    "http://127.0.0.1:8080/*",
-    "http://localhost:8080/*"
+    "*://chatgpt.com/*",
+    "*://*.chatgpt.com/*",
+    "*://chat.openai.com/*",
+    "*://kimi.com/*",
+    "*://*.kimi.com/*",
+    "*://kimi.ai/*",
+    "*://*.kimi.ai/*",
+    "*://www.kimi.ai/*",
+    "*://www.kimi.com/*",
+    "*://moonshot.cn/*",
+    "*://*.moonshot.cn/*",
+    "*://chat.z.ai/*",
+    "*://*.z.ai/*",
+    "*://chatglm.cn/*",
+    "*://*.chatglm.cn/*",
+    "*://bigmodel.cn/*",
+    "*://*.bigmodel.cn/*",
+    "http://100.115.92.14:8090/*",
+    "http://100.115.92.14:8090/*"
   ],
   "background": {
-    "scripts": [
-      "background.js"
-    ]
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
       "matches": [
         "*://chat.deepseek.com/*",
         "*://chat.qwen.ai/*",
+        "*://*.qwen.ai/*",
+        "*://qianwen.com/*",
+        "*://*.qianwen.com/*",
         "*://claude.ai/*",
-        "*://gemini.google.com/*"
+        "*://gemini.google.com/*",
+        "*://chatgpt.com/*",
+        "*://*.chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://kimi.com/*",
+        "*://*.kimi.com/*",
+        "*://kimi.ai/*",
+        "*://*.kimi.ai/*",
+        "*://www.kimi.ai/*",
+        "*://www.kimi.com/*",
+        "*://moonshot.cn/*",
+        "*://*.moonshot.cn/*",
+        "*://chat.z.ai/*",
+        "*://*.z.ai/*",
+        "*://chatglm.cn/*",
+        "*://*.chatglm.cn/*",
+        "*://bigmodel.cn/*",
+        "*://*.bigmodel.cn/*"
       ],
       "js": [
         "providers/base.js",
@@ -36,6 +77,9 @@
         "providers/qwen.js",
         "providers/claude.js",
         "providers/gemini.js",
+        "providers/chatgpt.js",
+        "providers/kimi.js",
+        "providers/zai.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -44,20 +88,16 @@
   "action": {
     "default_title": "NemApi Admin",
     "default_icon": {
-      "16": "icons/logo.svg",
-      "48": "icons/logo.svg",
-      "128": "icons/logo.svg"
+      "16": "icons/logo-16.png",
+      "32": "icons/logo-32.png",
+      "48": "icons/logo-48.png",
+      "128": "icons/logo-128.png"
     }
   },
   "icons": {
-    "16": "icons/logo.svg",
-    "48": "icons/logo.svg",
-    "128": "icons/logo.svg"
-  },
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "nemapi@local",
-      "strict_min_version": "109.0"
-    }
+    "16": "icons/logo-16.png",
+    "32": "icons/logo-32.png",
+    "48": "icons/logo-48.png",
+    "128": "icons/logo-128.png"
   }
 }

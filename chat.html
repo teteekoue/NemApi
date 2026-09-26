@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Chat test</title>
 <link rel="stylesheet" href="/admin.css">
-<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+<link rel="icon" href="/extension/icons/logo-32.png" type="image/png">
 </head>
 <body>
 <button class="menu-btn" aria-label="Menu" type="button">
@@ -16,7 +16,7 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div class="logo"><img src="/extension/icons/logo-48.png" alt="NemApi"></div>
       <div>
         <div class="name">NemApi</div>
         <div class="tag">Pont API local</div>
@@ -42,7 +42,7 @@
     </nav>
     <div class="side-foot">
       <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
-      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+      <div class="ver">NemApi v4.0 · 7 providers</div>
     </div>
   </aside>
 
@@ -102,7 +102,15 @@ let chatHistory = [];
 let chatBusy = false;
 
 function initChatSelectors() {
-  const models = ["deepseek-chat", "qwen-chat", "claude-chat", "gemini-chat"];
+  const models = [
+    "deepseek-chat",
+    "qwen-chat",
+    "claude-chat",
+    "gemini-chat",
+    "gpt-chat",
+    "kimi-chat",
+    "glm-chat",
+  ];
   $("chat-model").innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
 }
 
@@ -179,6 +187,9 @@ async function sendChat() {
     "qwen-chat": "qwen",
     "claude-chat": "claude",
     "gemini-chat": "gemini",
+    "gpt-chat": "chatgpt",
+    "kimi-chat": "kimi",
+    "glm-chat": "zai",
   };
   const provider = modelToProvider[model] || model.split("-")[0];
 

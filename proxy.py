@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NemApi v3.0 – Local OpenAI-compatible bridge with Firefox extension automation.
+"""NemApi v4.0 – Local OpenAI-compatible bridge with browser extension automation.
 
 Simplified architecture:
 - Receives a request
@@ -33,7 +33,7 @@ from tools_format import (
 )
 
 # Configuration du serveur - écoute sur toutes les interfaces réseau
-HOST, PORT = "0.0.0.0", 8080
+HOST, PORT = "0.0.0.0", 8090
 
 # Canonical model per provider (what the web UI actually uses)
 PROVIDERS = {
@@ -41,6 +41,9 @@ PROVIDERS = {
     "qwen": {"models": ["qwen-chat"], "display_name": "Qwen"},
     "claude": {"models": ["claude-chat"], "display_name": "Claude"},
     "gemini": {"models": ["gemini-chat"], "display_name": "Gemini"},
+    "chatgpt": {"models": ["gpt-chat"], "display_name": "ChatGPT"},
+    "kimi": {"models": ["kimi-chat"], "display_name": "Kimi"},
+    "zai": {"models": ["glm-chat"], "display_name": "Z.ai"},
 }
 
 # Aliases accepted from clients (Qwen Code, Cursor, Continue, etc.)
@@ -77,6 +80,31 @@ MODEL_ALIASES: Dict[str, str] = {
     "gemini-pro": "gemini",
     "gemini-flash": "gemini",
     "flash": "gemini",
+    # ChatGPT
+    "gpt-chat": "chatgpt",
+    "chatgpt": "chatgpt",
+    "gpt-4": "chatgpt",
+    "gpt-4o": "chatgpt",
+    "gpt-4.1": "chatgpt",
+    "gpt-5": "chatgpt",
+    "gpt-3.5-turbo": "chatgpt",
+    "o1": "chatgpt",
+    "o3": "chatgpt",
+    # Kimi
+    "kimi-chat": "kimi",
+    "kimi": "kimi",
+    "moonshot": "kimi",
+    "kimi-k2": "kimi",
+    "kimi-k3": "kimi",
+    # Z.ai / Zhipu
+    "glm-chat": "zai",
+    "zai-chat": "zai",
+    "zai": "zai",
+    "z.ai": "zai",
+    "glm": "zai",
+    "glm-4": "zai",
+    "glm-5": "zai",
+    "chatglm": "zai",
 }
 
 # Model to provider mapping (canonical + provider/model form + aliases)
@@ -89,12 +117,17 @@ for alias, provider in MODEL_ALIASES.items():
     MODEL_TO_PROVIDER[alias] = provider
     MODEL_TO_PROVIDER[f"{provider}/{alias}"] = provider
 
-# Pricing per 1K tokens (approximate, for analytics)
+# Pricing USD per 1K tokens (approx. mid-tier API list prices, Aug 2026)
+# Source: public list prices (DeepSeek V4 Flash, Qwen Plus, Claude Sonnet,
+# Gemini 3.5 Flash, GPT-4o / GPT-5.6 mid, Kimi K2.6, GLM-5.2).
 TOKEN_PRICING = {
-    "deepseek": {"prompt": 0.00067, "completion": 0.00083},
-    "qwen": {"prompt": 0.0025, "completion": 0.0025},
-    "claude": {"prompt": 0.003, "completion": 0.015},
-    "gemini": {"prompt": 0.0025, "completion": 0.005},
+    "deepseek": {"prompt": 0.00014, "completion": 0.00028, "label": "DeepSeek V4 Flash"},
+    "qwen": {"prompt": 0.00050, "completion": 0.00300, "label": "Qwen Plus"},
+    "claude": {"prompt": 0.00300, "completion": 0.01500, "label": "Claude Sonnet"},
+    "gemini": {"prompt": 0.00150, "completion": 0.00900, "label": "Gemini Flash"},
+    "chatgpt": {"prompt": 0.00250, "completion": 0.01000, "label": "GPT-4o / mid"},
+    "kimi": {"prompt": 0.00095, "completion": 0.00400, "label": "Kimi K2.6"},
+    "zai": {"prompt": 0.00140, "completion": 0.00440, "label": "GLM-5.2"},
 }
 STATIC_TYPES = {
     ".css": "text/css; charset=utf-8",
@@ -108,6 +141,7 @@ STATIC_TYPES = {
 
 # Fichier de configuration pour la persistance
 CONFIG_FILE = Path(__file__).with_name("config.json")
+STATS_FILE = Path(__file__).with_name("stats.json")
 
 
 def generate_api_key():
@@ -185,6 +219,71 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def _empty_provider_stats() -> Dict[str, Dict[str, float]]:
+    return {
+        pid: {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
+        for pid in PROVIDERS.keys()
+    }
+
+
+def load_stats() -> Dict[str, Any]:
+    """Load persisted analytics counters from disk."""
+    base = {
+        "requests": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_cost": 0.0,
+        "providers": _empty_provider_stats(),
+        "updated_at": None,
+    }
+    if not STATS_FILE.exists():
+        return base
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return base
+        providers = _empty_provider_stats()
+        for pid, pdata in (data.get("providers") or {}).items():
+            if pid in providers and isinstance(pdata, dict):
+                providers[pid] = {
+                    "requests": int(pdata.get("requests") or 0),
+                    "prompt_tokens": int(pdata.get("prompt_tokens") or 0),
+                    "completion_tokens": int(pdata.get("completion_tokens") or 0),
+                    "cost": float(pdata.get("cost") or 0.0),
+                }
+        base.update(
+            {
+                "requests": int(data.get("requests") or 0),
+                "prompt_tokens": int(data.get("prompt_tokens") or 0),
+                "completion_tokens": int(data.get("completion_tokens") or 0),
+                "estimated_cost": float(data.get("estimated_cost") or 0.0),
+                "providers": providers,
+                "updated_at": data.get("updated_at"),
+            }
+        )
+        return base
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return base
+
+
+def save_stats(data: Dict[str, Any]):
+    """Persist analytics counters."""
+    try:
+        payload = {
+            "requests": int(data.get("requests") or 0),
+            "prompt_tokens": int(data.get("prompt_tokens") or 0),
+            "completion_tokens": int(data.get("completion_tokens") or 0),
+            "estimated_cost": float(data.get("estimated_cost") or 0.0),
+            "providers": data.get("providers") or _empty_provider_stats(),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        add_log(f"Erreur sauvegarde stats: {e}", "error")
+
+
 def calculate_cost(provider: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Calculate estimated cost based on token usage."""
     if provider not in TOKEN_PRICING:
@@ -194,11 +293,13 @@ def calculate_cost(provider: str, prompt_tokens: int, completion_tokens: int) ->
 
 
 class Job:
-    def __init__(self, question: str, provider: str, model: str):
+    def __init__(self, question: str, provider: str, model: str, fresh_chat: bool | None = None):
         self.id = str(uuid.uuid4())
         self.question = question
         self.provider = provider
         self.model = model
+        # Per-request override of the global fresh_chat setting (None = use global)
+        self.fresh_chat = fresh_chat
         self.status = "pending"
         self.result = ""
         self.error = ""
@@ -220,7 +321,7 @@ class Coordinator:
     # prompts sent a few seconds apart.
     DEDUP_WINDOW_S = 2.5
 
-    def create(self, question: str, provider: str, model: str) -> Job:
+    def create(self, question: str, provider: str, model: str, fresh_chat: bool | None = None) -> Job:
         """Enqueue a job. Reuse an in-flight identical job (same provider+question)
         created < DEDUP_WINDOW_S ago so client retries do not double-fire the UI."""
         with self.lock:
@@ -236,7 +337,7 @@ class Coordinator:
                     continue
                 add_log(f"Dedup: reuse job {existing.id[:8]} (identical in-flight request)")
                 return existing
-            job = Job(question, provider, model)
+            job = Job(question, provider, model, fresh_chat=fresh_chat)
             self.jobs[job.id] = job
 
             if provider not in self.queues:
@@ -310,20 +411,14 @@ start_time = time.time()
 # Charger la configuration au démarrage
 app_config = load_config()
 
-# Enhanced stats with per-provider tracking
-stats = {
-    "requests": 0,
-    "prompt_tokens": 0,
-    "completion_tokens": 0,
-    "estimated_cost": 0.0,
-    "providers": {
-        "deepseek": {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0},
-        "qwen": {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0},
-        "claude": {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0},
-        "gemini": {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0},
-    }
-}
+# Enhanced stats with per-provider tracking (persisted to stats.json)
+stats = load_stats()
 stats_lock = threading.Lock()
+# Ensure all current providers exist even if stats.json is older
+for _pid in PROVIDERS:
+    stats["providers"].setdefault(
+        _pid, {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
+    )
 
 # Charger les paramètres depuis la configuration
 stream_enabled = app_config["settings"].get("stream_enabled", True)
@@ -370,7 +465,7 @@ def read_page(name: str) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "NemApi/3.0"
+    server_version = "NemApi/4.0"
 
     def log_message(self, _fmt, *_args):
         pass
@@ -476,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._json({
                 "status": "ready" if connected else "waiting_extension",
-                "version": "3.0",
+                "version": "4.0",
                 "extension": connected,
                 "uptime_seconds": int(time.time() - start_time),
                 "providers_ready": providers_ready,
@@ -504,15 +599,21 @@ class Handler(BaseHTTPRequestHandler):
                 providers_out = {}
                 for name, pdata in stats["providers"].items():
                     req = pdata.get("requests") or 0
+                    pricing = TOKEN_PRICING.get(name, {})
                     providers_out[name] = {
                         **pdata,
                         "avg_prompt_tokens": round((pdata.get("prompt_tokens") or 0) / req, 1) if req else 0,
                         "avg_completion_tokens": round((pdata.get("completion_tokens") or 0) / req, 1) if req else 0,
                         "cost": round(pdata.get("cost") or 0.0, 6),
+                        "pricing": {
+                            "prompt_per_1k": pricing.get("prompt"),
+                            "completion_per_1k": pricing.get("completion"),
+                            "label": pricing.get("label", name),
+                        },
                     }
                 uptime = max(1, int(time.time() - start_time))
                 self._json({
-                    "version": "3.0",
+                    "version": "4.0",
                     "uptime_seconds": uptime,
                     "uptime_human": f"{uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
                     "total_requests": stats["requests"],
@@ -522,6 +623,16 @@ class Handler(BaseHTTPRequestHandler):
                     "total_tokens": stats["prompt_tokens"] + stats["completion_tokens"],
                     "estimated_cost": round(stats["estimated_cost"], 6),
                     "providers": providers_out,
+                    "pricing": {
+                        pid: {
+                            "prompt_per_1k": p.get("prompt"),
+                            "completion_per_1k": p.get("completion"),
+                            "label": p.get("label", pid),
+                        }
+                        for pid, p in TOKEN_PRICING.items()
+                    },
+                    "updated_at": stats.get("updated_at"),
+                    "persisted": True,
                 })
         elif path == "/settings":
             with ext_lock:
@@ -563,32 +674,17 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 self._json({"api_keys": api_keys_info, "require_auth": bool(app_config["api_keys"])})
         elif path == "/v1/models":
-            # OpenAI-compatible: plain ids + provider/model + popular aliases
-            # so Qwen Code / Cursor can select any of these model names.
-            data = []
-            seen = set()
-            for provider, info in PROVIDERS.items():
-                for model in info["models"]:
-                    for mid in (model, f"{provider}/{model}"):
-                        if mid in seen:
-                            continue
-                        seen.add(mid)
-                        data.append({
-                            "id": mid,
-                            "object": "model",
-                            "created": int(start_time),
-                            "owned_by": provider,
-                        })
-            for alias, provider in MODEL_ALIASES.items():
-                if alias in seen or provider not in PROVIDERS:
-                    continue
-                seen.add(alias)
-                data.append({
-                    "id": alias,
+            # Listing: only the canonical model of each provider (7 total).
+            # Aliases keep routing requests but are not advertised here.
+            data = [
+                {
+                    "id": info["models"][0],
                     "object": "model",
                     "created": int(start_time),
                     "owned_by": provider,
-                })
+                }
+                for provider, info in PROVIDERS.items()
+            ]
             self._json({"object": "list", "data": data})
         elif path == "/job":
             job = coord.take()
@@ -599,7 +695,8 @@ class Handler(BaseHTTPRequestHandler):
                     "question": job.question,
                     "provider": job.provider,
                     "model": job.model,
-                    "freshChat": fresh_chat_enabled,
+                    # per-request override wins over the global setting
+                    "freshChat": job.fresh_chat if job.fresh_chat is not None else fresh_chat_enabled,
                     "premiumMd": premium_md_enabled,
                 })
             else:
@@ -677,6 +774,17 @@ class Handler(BaseHTTPRequestHandler):
             detail = f"{len(body.get('result') or '')} chars" if action == "result" else (body.get("error") or "unknown error")
             add_log(f"Job {str(job_id)[:8]} {'OK' if action == 'result' else action}: {detail}", level)
             self._json({"ok": True})
+        elif path == "/stats/clear":
+            with stats_lock:
+                stats["requests"] = 0
+                stats["prompt_tokens"] = 0
+                stats["completion_tokens"] = 0
+                stats["estimated_cost"] = 0.0
+                stats["providers"] = _empty_provider_stats()
+                stats["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                save_stats(stats)
+            add_log("Analytics counters reset")
+            self._json({"ok": True, "message": "Stats cleared"})
         elif path == "/extension/log":
             level = body.get("level") if body.get("level") in ("info", "warn", "error") else "info"
             add_log(f"Extension: {str(body.get('message') or '')[:500]}", level)
@@ -912,7 +1020,7 @@ class Handler(BaseHTTPRequestHandler):
             if not extension_connected():
                 self._json({
                     "error": {
-                        "message": "Firefox extension is not connected. Load it and open the provider tab.",
+                        "message": "Browser extension is not connected. Load it and open the provider tab.",
                         "type": "extension_unavailable",
                     }
                 }, 503)
@@ -922,7 +1030,7 @@ class Handler(BaseHTTPRequestHandler):
             if provider not in ext_state["targetTabs"]:
                 self._json({
                     "error": {
-                        "message": f"No {provider} tab is selected. Open http://127.0.0.1:8080/ to configure.",
+                        "message": f"No {provider} tab is selected. Open http://127.0.0.1:8090/ to configure.",
                         "type": "provider_not_selected",
                     }
                 }, 409)
@@ -966,9 +1074,16 @@ class Handler(BaseHTTPRequestHandler):
         if "text/event-stream" in accept:
             stream_requested = True
 
+        # Per-request fresh-chat override ("fresh_chat": true|false in body).
+        # Defaults to the global admin setting.
+        fresh_chat_req = body.get("fresh_chat")
+        if fresh_chat_req is not None:
+            fresh_chat_req = bool(fresh_chat_req)
+
         add_log(
             f"Completion → {provider}/{response_model} stream={stream_requested} "
             f"tools={len(requested_tool_names)} prompt={len(prompt)}c"
+            f" fresh={fresh_chat_req if fresh_chat_req is not None else fresh_chat_enabled}"
         )
         self._handle_completion(
             prompt,
@@ -977,6 +1092,7 @@ class Handler(BaseHTTPRequestHandler):
             stream_requested,
             requested_tool_names=requested_tool_names or None,
             internal_model=internal_model,
+            fresh_chat=fresh_chat_req,
         )
 
     def _handle_completion(
@@ -987,9 +1103,11 @@ class Handler(BaseHTTPRequestHandler):
         stream: bool,
         requested_tool_names: list | None = None,
         internal_model: str | None = None,
+        fresh_chat: bool | None = None,
     ):
-        job = coord.create(prompt, provider, internal_model or model)
-        add_log(f"Job {job.id[:8]} queued → {provider}/{model} ({len(prompt)} chars)")
+        job = coord.create(prompt, provider, internal_model or model, fresh_chat=fresh_chat)
+        tail = prompt.replace("\n", " ")[-80:]
+        add_log(f"Job {job.id[:8]} queued → {provider}/{model} ({len(prompt)} chars) tail={tail!r}")
         if not job.event.wait(timeout=240):
             coord.complete(job.id, "error", error="timeout waiting for extension")
             add_log(f"Job {job.id[:8]} timed out", "error")
@@ -1015,11 +1133,18 @@ class Handler(BaseHTTPRequestHandler):
             stats["prompt_tokens"] += prompt_tokens
             stats["completion_tokens"] += completion_tokens
             stats["estimated_cost"] += estimated_cost
-            if provider in stats["providers"]:
-                stats["providers"][provider]["requests"] += 1
-                stats["providers"][provider]["prompt_tokens"] += prompt_tokens
-                stats["providers"][provider]["completion_tokens"] += completion_tokens
-                stats["providers"][provider]["cost"] += estimated_cost
+            if provider not in stats["providers"]:
+                stats["providers"][provider] = {
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cost": 0.0,
+                }
+            stats["providers"][provider]["requests"] += 1
+            stats["providers"][provider]["prompt_tokens"] += prompt_tokens
+            stats["providers"][provider]["completion_tokens"] += completion_tokens
+            stats["providers"][provider]["cost"] += estimated_cost
+            save_stats(stats)
 
         chat_id = "chatcmpl-" + uuid.uuid4().hex[:10]
 
@@ -1169,10 +1294,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     local_ip = get_local_ip()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"NemApi v3.0 listening on http://{HOST}:{PORT}/")
+    print(f"NemApi v4.0 listening on http://{HOST}:{PORT}/")
     print(f"Local network URL: http://{local_ip}:{PORT}/")
-    print("Admin UI  → http://127.0.0.1:8080/")
-    print("Analytics → http://127.0.0.1:8080/analytics")
+    print("Admin UI  → http://127.0.0.1:8090/")
+    print("Analytics → http://127.0.0.1:8090/analytics")
     print("API       → POST /v1/chat/completions (provider + model required)")
     print("\nStandard models: deepseek-chat, qwen-chat, claude-chat, gemini-chat")
     print("Auto-configuration is enabled by default")

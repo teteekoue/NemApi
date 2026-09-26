@@ -204,10 +204,14 @@
 
     // Attempt clipboard 2× (handlers can be flaky on first synthetic click)
     for (let attempt = 0; attempt < 2; attempt++) {
-      const fromClip = await B.tryClipboardFromCopyButton(copyRoot, [
-        'button[data-testid="action-bar-copy"]',
-        'button[aria-label*="Copy" i]',
-      ]);
+      const fromClip = await B.tryClipboardFromCopyButton(
+        copyRoot,
+        [
+          'button[data-testid="action-bar-copy"]',
+          'button[aria-label*="Copy" i]',
+        ],
+        { domAssistantText: fromDom }
+      );
       if (fromClip && fromClip.length > 10) {
         const clipFences = (fromClip.match(/```/g) || []).length;
         const domFences = (fromDom.match(/```/g) || []).length;
@@ -249,12 +253,29 @@
   }
 
   global.NemApiProviders = global.NemApiProviders || {};
+
+  function getResponseCount() {
+    try {
+      // Prefer completed assistant turns with a Copy action-bar button
+      const copies = document.querySelectorAll('button[data-testid="action-bar-copy"]');
+      if (copies.length) return copies.length;
+      const done = document.querySelectorAll('[data-is-streaming="false"]');
+      if (done.length) return done.length;
+      return document.querySelectorAll(
+        ".standard-markdown, [class*='font-claude-message']"
+      ).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   global.NemApiProviders.claude = {
     id: "claude",
     match: (url) => /claude\.ai/i.test(url),
     sendPrompt,
     waitForResponse,
     getLastResponse,
+    getResponseCount,
     isGenerating,
     findInput,
   };

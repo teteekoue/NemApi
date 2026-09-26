@@ -15,7 +15,7 @@ Usage:
 
 Configurer d'abord:
     1. Lancer le proxy: python3 proxy.py
-    2. Charger l'extension Firefox et selectionner les onglets fournisseurs
+    2. Charger l'extension navigateur et selectionner les onglets fournisseurs
     3. Dans ce script, choisir le provider et model
 """
 
@@ -201,7 +201,7 @@ def main():
     if not check_proxy_status():
         print("⚠️  Le proxy n'est pas pret. Assurez-vous que:")
         print("   1. python3 proxy.py est lance")
-        print("   2. L'extension Firefox est chargee")
+        print("   2. L'extension navigateur est chargee")
         print("   3. Les onglets fournisseurs sont selectionnes dans l'admin")
         print("\nAppuyez sur Entree pour continuer (ou Ctrl+C pour annuler)...")
         input()

@@ -1,8 +1,8 @@
-# NemApi v3.0
+# NemApi v4.0
 
-**Passerelle locale OpenAI-compatible** pour DeepSeek, Qwen, Claude et Gemini via extension Firefox (DOM).
+**Passerelle locale OpenAI-compatible** pour DeepSeek, Qwen, Claude et Gemini via extension navigateur Chromium (DOM).
 
-**Nouveautes v3.0 :**
+**Nouveautés v4.0 :**
 - ✅ **Multi-thread par provider** : Gere plusieurs requetes simultanees pour differents providers
 - ✅ **Acces reseau local** : L'API est accessible depuis d'autres machines sur votre reseau local
 - ✅ **Systeme de cles API** : Securisez votre endpoint avec des cles API
@@ -21,9 +21,9 @@ python3 proxy.py
 
 Le proxy demarrera sur `http://0.0.0.0:8080` (accessible depuis votre reseau local).
 
-### 2. Installer l'extension Firefox
+### 2. Installer l'extension navigateur (Chromium)
 
-1. Ouvrez `about:debugging` dans Firefox
+1. Ouvrez `chrome://extensions (mode développeur)` dans votre navigateur Chromium
 2. Cliquez sur "Charger un module temporaire"
 3. Selectionnez `extension/manifest.json`
 
@@ -303,7 +303,7 @@ Accedez au tableau de bord a http://127.0.0.1:8080/ pour :
 ### Le proxy ne repond pas
 
 - Verifiez que le proxy est demarre : `python3 proxy.py`
-- Verifiez que l'extension Firefox est chargee
+- Verifiez que l'extension navigateur (Chromium) est chargee
 - Verifiez que vous avez des onglets ouverts et connectes pour les providers
 
 ### Erreur "No provider tab is selected"

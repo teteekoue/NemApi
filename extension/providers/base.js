@@ -321,15 +321,20 @@
       const last = lastOf(getMessageEls());
       return last ? readText(last) : "";
     };
+    // No new bubble detected → keep filtering against `previous` so we don't
+    // return the old answer while streaming/idle.
     if (!newEl && !sawNewContent) {
       return waitUntilStable(readLast, { timeout, stableMs, pollMs, previous });
     }
+    // A NEW message element (or fingerprint) was observed. Do NOT filter by
+    // `previous` anymore — consecutive identical answers are valid and must
+    // be delivered (same fix as Gemini bubble-count gate).
     const target = newEl;
     return waitUntilStable(() => (target ? readText(target) : readLast()), {
       timeout,
       stableMs,
       pollMs,
-      previous,
+      previous: "",
     });
   }
 
@@ -617,25 +622,242 @@
   }
 
   /**
-   * Try synthetic click on a Copy button while intercepting clipboard.writeText.
-   * Returns markdown string or "". Does NOT require a physical/trusted click to
-   * *read* the intercept — but the site's handler may still ignore untrusted clicks.
+   * Install a MAIN-world clipboard hook so page JS (Qwen/Claude/…) writeText calls
+   * are visible to the isolated content-script world.
+   * Content-script patches of navigator.clipboard do NOT affect the page realm —
+   * that was why clipboard intercept silently failed while the real OS clipboard
+   * still received the text.
    */
-  async function tryClipboardFromCopyButton(root, buttonSelectors) {
+  function ensurePageClipboardHook() {
+    if (global.__NEMAPI_PAGE_CLIP_READY__) return;
+    global.__NEMAPI_PAGE_CLIP_READY__ = true;
+    global.__NEMAPI_LAST_CLIP__ = "";
+
+    // Content-script side: receive captures from the page world
+    window.addEventListener(
+      "__nemapi_clip_capture__",
+      (e) => {
+        try {
+          const t = e && e.detail != null ? String(e.detail) : "";
+          if (t && t !== "[object Object]" && t.length >= (global.__NEMAPI_LAST_CLIP__ || "").length) {
+            global.__NEMAPI_LAST_CLIP__ = t;
+          }
+        } catch (_) {}
+      },
+      true
+    );
+
+    // CSP blocks inline <script> injection on ChatGPT/Kimi/etc.
+    // Only use chrome.scripting world:MAIN via the background service worker.
+    try {
+      chrome.runtime.sendMessage({ action: "installPageClipHook" }).catch(() => {});
+    } catch (_) {}
+  }
+
+  /**
+   * Try synthetic click on a Copy button while intercepting the page's clipboard writes.
+   * Returns markdown string or "".
+   *
+   * Strategy (in order):
+   *  1) MAIN-world hook (page navigator.clipboard.writeText) via CustomEvent
+   *  2) Isolated-world writeText patch (works only if page shares the same object — rare)
+   *  3) document "copy" event
+   *  4) navigator.clipboard.readText() after the click (needs clipboardRead permission)
+   */
+  /**
+   * True if the button is a *code-block* copy control (not the full-message one).
+   */
+  function isCodeBlockCopyButton(el) {
+    if (!el) return false;
+    if (
+      el.closest(
+        "pre, code, .md-code-block, [class*='md-code'], [class*='code-block'], " +
+          "[class*='CodeBlock'], [class*='codeblock'], [class*='hljs'], " +
+          "[class*='syntax'], [data-code-block], .ds-code-block"
+      )
+    ) {
+      return true;
+    }
+    const label = (
+      (el.getAttribute("aria-label") || "") +
+      " " +
+      (el.title || "") +
+      " " +
+      (el.innerText || el.textContent || "")
+    ).toLowerCase();
+    if (/copy\s*code|copy\s*snippet|复制代码|复制片段|copy\s*block/i.test(label)) {
+      return true;
+    }
+    const parent = el.parentElement;
+    if (parent) {
+      const siblings = parent.querySelectorAll(
+        "button, [role='button'], .ds-icon-button, [class*='icon-button']"
+      );
+      if (siblings.length <= 2 && el.closest("pre, [class*='code']")) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True if the element lives inside a *user* / human prompt bubble.
+   * Critical: never click a copy button that belongs to the user message.
+   */
+  function isUserMessageContext(el) {
+    if (!el) return false;
+    if (
+      el.closest(
+        // Generic
+        '[data-role="user"], [data-message-author-role="user"], [data-message-author-role="human"], ' +
+          '[data-testid*="user-message" i], [data-testid*="user_message" i], ' +
+          // ChatGPT
+          '[data-message-author-role="user"], ' +
+          // Gemini
+          "user-query, .user-query, .query-text, [class*='user-query'], [class*='query-content'], " +
+          // Claude
+          '[data-testid="user-message"], .font-user-message, ' +
+          // DeepSeek / Qwen / Kimi / Z.ai class heuristics
+          "[class*='user-message'], [class*='human-message'], [class*='UserMessage'], " +
+          "[class*='user_message'], [class*='prompt-message'], [class*='question-message'], " +
+          // Role attributes
+          '[role="user"], [data-author="user"], [data-author="human"]'
+      )
+    ) {
+      return true;
+    }
+    // Aria / data labels on ancestors
+    let n = el;
+    for (let i = 0; i < 8 && n; i++) {
+      const role = (
+        (n.getAttribute && (n.getAttribute("data-role") || n.getAttribute("data-message-author-role") || "")) +
+        " " +
+        (n.getAttribute && (n.getAttribute("aria-label") || "")) +
+        " " +
+        (n.className && String(n.className)) ||
+        ""
+      ).toLowerCase();
+      if (/\b(user|human|prompt|query|question)\b/.test(role) && !/\b(assistant|model|bot|ai|response|answer)\b/.test(role)) {
+        // Strong user signal without assistant signal
+        if (/\b(user-message|human-message|user-query|data-role.?=.?user|author-role.?=.?user)\b/.test(role)) {
+          return true;
+        }
+      }
+      n = n.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * True if the element lives inside an *assistant* / model response bubble.
+   */
+  function isAssistantMessageContext(el) {
+    if (!el) return false;
+    if (
+      el.closest(
+        '[data-role="assistant"], [data-message-author-role="assistant"], [data-message-author-role="model"], ' +
+          '[data-testid*="assistant" i], [data-testid*="model-response" i], ' +
+          "model-response, .model-response, .model-response-text, message-content.model-response-text, " +
+          '[data-testid="assistant-message"], .font-claude-message, ' +
+          "[class*='assistant-message'], [class*='bot-message'], [class*='model-message'], " +
+          "[class*='ai-message'], [class*='response-message'], .ds-message, " +
+          "[class*='AgentMessage'], [class*='AssistantMessage']"
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Score a candidate copy button: higher = more likely the *assistant message* copy.
+   * Strongly rejects user-message and code-block buttons.
+   * Prefers toolbars with regenerate / like / dislike / share.
+   */
+  function scoreMessageCopyButton(el) {
+    if (!el || !isVisible(el) || isCodeBlockCopyButton(el)) return -1;
+    // Hard reject: belongs to a user/human prompt bubble
+    if (isUserMessageContext(el) && !isAssistantMessageContext(el)) return -1;
+
+    let score = 10;
+    const label = (
+      (el.getAttribute("aria-label") || "") +
+      " " +
+      (el.title || "") +
+      " " +
+      (el.innerText || el.textContent || "") +
+      " " +
+      (el.getAttribute("data-testid") || "")
+    ).toLowerCase();
+
+    // Explicit assistant/response copy labels
+    if (
+      /copy\s*(response|message|answer|full|prompt)?|copier\s*(la\s*)?(réponse|message)?|复制(全部|消息|回答|回复|内容)?/i.test(
+        label
+      )
+    ) {
+      score += 40;
+    }
+    if (/copy-response|copy-turn|action-bar-copy|copy_response/i.test(label)) score += 60;
+    if (/copy|copier|复制|clipboard/.test(label)) score += 5;
+
+    // Reject labels that clearly mean "copy prompt / user input"
+    if (/copy\s*(prompt|query|question|input)|复制(提问|问题|输入)/i.test(label)) return -1;
+
+    if (isAssistantMessageContext(el)) score += 35;
+    if (isUserMessageContext(el)) score -= 80;
+
+    // Sibling toolbar: regenerate / like / dislike / share = assistant action bar
+    let group = el.parentElement;
+    for (let i = 0; i < 5 && group; i++) {
+      const groupText = (group.innerText || group.textContent || "").toLowerCase();
+      const groupAria = (
+        (group.getAttribute && (group.getAttribute("aria-label") || "")) +
+        " " +
+        (group.className && String(group.className)) ||
+        ""
+      ).toLowerCase();
+      const btns = group.querySelectorAll(
+        "button, [role='button'], .ds-icon-button, [class*='icon-button']"
+      );
+      if (btns.length >= 3) score += 15;
+      if (btns.length >= 4) score += 10;
+      if (
+        /regenerat|retry|重新生成|like|dislike|thumb|share|分享|点赞|点踩|good\s*response|bad\s*response|report|修改/i.test(
+          groupText + " " + groupAria
+        )
+      ) {
+        score += 40;
+      }
+      if (/message\s*actions|action-bar|response-actions|footer-actions/i.test(groupAria)) {
+        score += 25;
+      }
+      group = group.parentElement;
+    }
+    return score;
+  }
+
+  /**
+   * Collect copy-button candidates under `root`, excluding user-message /
+   * code-block controls. Returns sorted [{el, score}] (best first).
+   */
+  function collectAssistantCopyCandidates(root, buttonSelectors) {
     const sels = buttonSelectors || [
       'button[data-testid="action-bar-copy"]',
+      'button[aria-label*="Copy response" i]',
+      'button[aria-label*="Copy message" i]',
       'button[aria-label*="Copy" i]',
       'button[aria-label*="Copier" i]',
       'button[aria-label*="复制"]',
       'button[title*="Copy" i]',
     ];
     if (!root) root = document.body;
-    let btn = null;
+    const candidates = [];
+    const seen = new Set();
     for (const s of sels) {
       try {
         const nodes = root.querySelectorAll(s);
-        for (let i = nodes.length - 1; i >= 0; i--) {
-          const n = nodes[i];
+        for (const n of nodes) {
+          if (seen.has(n)) continue;
+          seen.add(n);
           const label = (
             (n.getAttribute("aria-label") || "") +
             " " +
@@ -645,34 +867,123 @@
           ).toLowerCase();
           if (s === "button" && !/copy|copier|复制|clipboard/.test(label)) continue;
           if (!isVisible(n)) continue;
-          btn = n;
-          break;
+          if (isCodeBlockCopyButton(n)) continue;
+          // Hard skip pure user-message copies
+          if (isUserMessageContext(n) && !isAssistantMessageContext(n)) continue;
+          const sc = scoreMessageCopyButton(n);
+          if (sc >= 0) candidates.push({ el: n, score: sc });
         }
       } catch (_) {}
-      if (btn) break;
     }
-    if (!btn) {
-      // Text-based fallback
-      btn = findByText(["button", "[role='button']"], [/copy/i, /copier/i, /复制/], root);
+    if (!candidates.length) {
+      try {
+        const all = root.querySelectorAll("button, [role='button']");
+        for (const n of all) {
+          if (seen.has(n)) continue;
+          const label = (
+            (n.getAttribute("aria-label") || "") +
+            " " +
+            (n.title || "") +
+            " " +
+            (n.innerText || n.textContent || "")
+          ).toLowerCase();
+          if (!/copy|copier|复制|clipboard/.test(label)) continue;
+          if (!isVisible(n) || isCodeBlockCopyButton(n)) continue;
+          if (isUserMessageContext(n) && !isAssistantMessageContext(n)) continue;
+          const sc = scoreMessageCopyButton(n);
+          if (sc >= 0) candidates.push({ el: n, score: sc });
+        }
+      } catch (_) {}
     }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates;
+  }
+
+  /**
+   * Heuristic: does `clip` look like the *user prompt* rather than the assistant answer?
+   * Used as a safety net after clipboard intercept.
+   */
+  function looksLikeUserPrompt(clip, domAssistantText) {
+    if (!clip || typeof clip !== "string") return false;
+    const c = clip.trim();
+    if (c.length < 2) return true;
+    // Matches known last user-query bubbles on the page
+    try {
+      const userNodes = document.querySelectorAll(
+        'user-query, [data-message-author-role="user"], [data-role="user"], ' +
+          '[data-testid="user-message"], .user-query, [class*="user-message"], [class*="human-message"]'
+      );
+      for (const n of userNodes) {
+        const ut = (n.innerText || n.textContent || "").trim();
+        if (ut.length > 5 && (c === ut || (c.length <= ut.length + 5 && ut.startsWith(c.slice(0, Math.min(80, c.length)))))) {
+          return true;
+        }
+        // clipboard is a short prefix of user text
+        if (ut.length > 20 && c.length > 10 && ut.startsWith(c.slice(0, Math.min(c.length, 120)))) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    // If we have a solid DOM assistant extract, and clipboard is wildly different & shorter → suspicious
+    if (domAssistantText && domAssistantText.trim().length > 40) {
+      const d = domAssistantText.trim();
+      if (c.length < d.length * 0.25 && !d.includes(c.slice(0, Math.min(40, c.length)))) {
+        // clipboard much shorter and not contained in DOM answer → likely wrong
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function tryClipboardFromCopyButton(root, buttonSelectors, opts) {
+    opts = opts || {};
+    const domHint = opts.domAssistantText || "";
+    ensurePageClipboardHook();
+    // Give MAIN-world inject a moment on first use (message is async)
+    if (!global.__NEMAPI_CLIP_HOOK_WAITED__) {
+      global.__NEMAPI_CLIP_HOOK_WAITED__ = true;
+      await sleep(120);
+    }
+
+    if (!root) root = document.body;
+    const candidates = collectAssistantCopyCandidates(root, buttonSelectors);
+    // Require a minimum score so we never click a user-message / junk button
+    const btn =
+      candidates.length && candidates[0].score >= 20 ? candidates[0].el : null;
     if (!btn) return "";
 
-    let captured = "";
-    const clip = navigator.clipboard;
-    const origWrite = clip && clip.writeText ? clip.writeText.bind(clip) : null;
-    const origWriteFull = clip && clip.write ? clip.write.bind(clip) : null;
+    // Snapshot before click so we can detect a fresh write
+    const before = global.__NEMAPI_LAST_CLIP__ || "";
+    global.__NEMAPI_LAST_CLIP__ = "";
 
-    const capture = (text) => {
-      if (typeof text === "string" && text.length > captured.length) {
-        captured = text;
+    // Prefer plain/markdown over HTML. ChatGPT often writes both text/plain AND
+    // text/html; HTML is longer so a naive "longest wins" picks the wrong one.
+    let capturedPlain = "";
+    let capturedHtml = "";
+    const looksHtml = (s) =>
+      /<\/?(p|div|span|strong|em|br|ul|ol|li|h[1-6]|a|code|pre|table)\b/i.test(s || "");
+
+    const capture = (text, mimeHint) => {
+      if (typeof text !== "string" || !text || text === "[object Object]") return;
+      const isHtml =
+        mimeHint === "text/html" ||
+        (mimeHint !== "text/plain" && looksHtml(text) && text.includes("<"));
+      if (isHtml) {
+        if (text.length > capturedHtml.length) capturedHtml = text;
+      } else {
+        if (text.length > capturedPlain.length) capturedPlain = text;
       }
     };
 
+    // Isolated-world patch (harmless if page uses its own clipboard object)
+    const clip = navigator.clipboard;
+    const origWrite = clip && clip.writeText ? clip.writeText.bind(clip) : null;
+    const origWriteFull = clip && clip.write ? clip.write.bind(clip) : null;
     if (clip) {
       try {
         clip.writeText = async (text) => {
-          capture(text);
-          return undefined;
+          capture(text, "text/plain");
+          if (origWrite) return origWrite(text);
         };
       } catch (_) {}
       try {
@@ -680,52 +991,71 @@
           try {
             for (const item of items || []) {
               if (item && item.types) {
-                for (const type of item.types) {
-                  if (String(type).startsWith("text/")) {
-                    const blob = await item.getType(type);
-                    const text = await blob.text();
-                    capture(text);
-                  }
+                // Prefer text/plain first when both are present
+                const types = Array.from(item.types || []);
+                const ordered = [
+                  ...types.filter((t) => t === "text/plain"),
+                  ...types.filter((t) => t !== "text/plain" && String(t).startsWith("text/")),
+                ];
+                for (const type of ordered) {
+                  const blob = await item.getType(type);
+                  capture(await blob.text(), String(type));
                 }
               }
             }
           } catch (_) {}
-          return undefined;
+          if (origWriteFull) return origWriteFull(items);
         };
       } catch (_) {}
     }
 
-    // Also listen for legacy copy event
     const onCopy = (e) => {
       try {
-        const txt =
+        const plain =
           (e.clipboardData && e.clipboardData.getData("text/plain")) ||
           (window.clipboardData && window.clipboardData.getData("Text")) ||
           "";
-        capture(txt);
+        if (plain) capture(plain, "text/plain");
+        const html = e.clipboardData && e.clipboardData.getData("text/html");
+        if (html) capture(html, "text/html");
       } catch (_) {}
     };
     document.addEventListener("copy", onCopy, true);
 
     try {
-      // Multi-event sequence — some UIs listen to pointerup rather than click
       btn.focus && btn.focus();
       for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
         try {
           btn.dispatchEvent(
-            new PointerEvent(type, { bubbles: true, cancelable: true, view: window, pointerType: "mouse" })
+            new PointerEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              pointerType: "mouse",
+            })
           );
         } catch (_) {
-          btn.dispatchEvent(new MouseEvent(type.replace("pointer", "mouse"), { bubbles: true, cancelable: true, view: window }));
+          btn.dispatchEvent(
+            new MouseEvent(type.replace("pointer", "mouse"), {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+            })
+          );
         }
       }
-      // Fallback native click
       try {
         btn.click();
       } catch (_) {}
-      // Wait for async clipboard handlers
-      await sleep(120);
-      await sleep(80);
+
+      // Page handlers are often async (React onClick → writeText). Poll briefly.
+      for (let i = 0; i < 5; i++) {
+        await sleep(i < 2 ? 40 : 70);
+        if (global.__NEMAPI_LAST_CLIP__ && global.__NEMAPI_LAST_CLIP__ !== before) {
+          capture(global.__NEMAPI_LAST_CLIP__);
+        }
+        if (capturedPlain && capturedPlain.length > 10) break;
+      }
     } finally {
       document.removeEventListener("copy", onCopy, true);
       if (clip && origWrite) {
@@ -739,8 +1069,75 @@
         } catch (_) {}
       }
     }
-    if (captured && captured !== "[object Object]") return captured.trim();
+
+    if (!capturedPlain && global.__NEMAPI_LAST_CLIP__ && global.__NEMAPI_LAST_CLIP__ !== before) {
+      capture(global.__NEMAPI_LAST_CLIP__);
+    }
+
+    // Last resort: read the system clipboard (requires clipboardRead permission)
+    if ((!capturedPlain || capturedPlain.length < 10) && clip && typeof clip.readText === "function") {
+      try {
+        const read = await clip.readText();
+        if (read && read.length > 10 && read !== "[object Object]" && read !== before) {
+          capture(read, "text/plain");
+        }
+      } catch (_) {}
+    }
+
+    let result = capturedPlain;
+    // If we only got HTML, convert tags to markdown-ish plain text
+    if ((!result || result.length < 10) && capturedHtml) {
+      result = htmlStringToMarkdown(capturedHtml);
+    }
+    // Safety: never return raw HTML blobs
+    if (result && looksHtml(result) && result.includes("<")) {
+      result = htmlStringToMarkdown(result);
+    }
+
+    if (result && result !== "[object Object]" && !/^\[object\s+\w+\]$/i.test(result.trim())) {
+      result = result.trim();
+      // Final safety: reject if clipboard looks like the user prompt
+      if (looksLikeUserPrompt(result, domHint)) {
+        return "";
+      }
+      return result;
+    }
     return "";
+  }
+
+  /** Convert an HTML string (from clipboard text/html) into approximate markdown. */
+  function htmlStringToMarkdown(html) {
+    if (!html || typeof html !== "string") return "";
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const body = doc.body || doc.documentElement;
+      if (!body) return stripTagsFallback(html);
+      return htmlToMarkdown(body) || stripTagsFallback(html);
+    } catch (_) {
+      return stripTagsFallback(html);
+    }
+  }
+
+  function stripTagsFallback(html) {
+    return String(html || "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n\n")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<\/h[1-6]>/gi, "\n\n")
+      .replace(/<\/li>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "- ")
+      .replace(/<(strong|b)[^>]*>/gi, "**")
+      .replace(/<\/(strong|b)>/gi, "**")
+      .replace(/<(em|i)[^>]*>/gi, "*")
+      .replace(/<\/(em|i)>/gi, "*")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   }
 
   /**
@@ -798,6 +1195,17 @@
     return !!(global.__NEMAPI_PREMIUM_MD__);
   }
 
+  // Install page clipboard hook as early as possible (content-script load)
+  try {
+    if (typeof document !== "undefined") {
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => ensurePageClipboardHook(), { once: true });
+      } else {
+        ensurePageClipboardHook();
+      }
+    }
+  } catch (_) {}
+
   global.NemApiBase = {
     sleep,
     waitFor,
@@ -826,7 +1234,12 @@
     stripLeadingLineNumbers,
     cleanMarkdownCodeFences,
     tryClipboardFromCopyButton,
+    ensurePageClipboardHook,
     extractAssistantMarkdown,
     premiumEnabled,
+    isCodeBlockCopyButton,
+    isUserMessageContext,
+    isAssistantMessageContext,
+    scoreMessageCopyButton,
   };
 })(typeof window !== "undefined" ? window : self);

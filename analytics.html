@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Analytics</title>
 <link rel="stylesheet" href="/admin.css">
-<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+<link rel="icon" href="/extension/icons/logo-32.png" type="image/png">
 </head>
 <body>
 <button class="menu-btn" aria-label="Menu" type="button">
@@ -16,7 +16,7 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div class="logo"><img src="/extension/icons/logo-48.png" alt="NemApi"></div>
       <div>
         <div class="name">NemApi</div>
         <div class="tag">Pont API local</div>
@@ -31,6 +31,10 @@
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Configuration
       </a>
+      <a href="/api-keys-page" id="api-keys-link">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        Clés API
+      </a>
       <a href="/chat">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Chat test
@@ -42,7 +46,7 @@
     </nav>
     <div class="side-foot">
       <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
-      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+      <div class="ver">NemApi v4.0 · 7 providers</div>
     </div>
   </aside>
 
@@ -51,26 +55,32 @@
       <div class="page-head">
         <div>
           <h1>Analytics</h1>
-          <div class="sub">Requêtes, tokens et coûts estimés par fournisseur.</div>
+          <div class="sub">Tokens, coûts estimés (prix API publics) et historique persisté.</div>
         </div>
-        <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+        <div class="page-actions">
+          <div class="pill"><i id="hdot" class="dot"></i><span id="hconn">Extension non connectée</span></div>
+          <button type="button" class="btn-danger" id="btn-clear-stats" title="Remettre les compteurs à zéro">Effacer l'historique</button>
+        </div>
       </div>
 
       <div class="grid g4" style="margin-bottom:16px">
         <div class="stat" style="--accent:var(--grad);--accent-soft:rgba(96,165,250,.12)">
           <div class="head"><span class="label">Requêtes</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
           <div class="value" id="total-requests">0</div>
-          <div class="trend">toutes sources</div>
+          <div class="trend" id="persist-note">historique persisté</div>
         </div>
         <div class="stat" style="--accent:linear-gradient(135deg,#22d3ee,#60a5fa);--accent-soft:rgba(34,211,238,.12)">
           <div class="head"><span class="label">Tokens</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
           <div class="value" id="total-tokens">0</div>
-          <div class="trend" id="token-breakdown">0 + 0</div>
+          <div class="token-split">
+            <span class="token-chip">in <strong id="token-in">0</strong></span>
+            <span class="token-chip">out <strong id="token-out">0</strong></span>
+          </div>
         </div>
         <div class="stat" style="--accent:linear-gradient(135deg,#34d399,#22d3ee);--accent-soft:rgba(52,211,153,.12)">
           <div class="head"><span class="label">Coût estimé</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
           <div class="value" id="total-cost">$0.00</div>
-          <div class="trend">USD approximatif</div>
+          <div class="trend">USD · tarifs API publics</div>
         </div>
         <div class="stat" style="--accent:linear-gradient(135deg,#fbbf24,#f87171);--accent-soft:rgba(251,191,36,.12)">
           <div class="head"><span class="label">Uptime</span><span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span></div>
@@ -93,8 +103,29 @@
             <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
             Détail par provider
           </h3>
-          <p class="desc">Tokens et coût estimé.</p>
+          <p class="desc">Input / output tokens et coût estimé.</p>
           <div id="provider-stats"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <h3>
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          Tarifs API de référence (USD / 1K tokens)
+        </h3>
+        <p class="desc">Prix listés publics (mi-2026) utilisés pour estimer le coût — le pont local reste gratuit.</p>
+        <div style="overflow-x:auto">
+          <table class="pricing-table" id="pricing-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Modèle réf.</th>
+                <th>Input / 1K</th>
+                <th>Output / 1K</th>
+              </tr>
+            </thead>
+            <tbody id="pricing-body"></tbody>
+          </table>
         </div>
       </div>
 
@@ -110,7 +141,7 @@
           </div>
           <div class="setting" style="border:none;padding:8px 0">
             <div class="s-title">Version</div>
-            <div class="s-desc">NemApi v3.0 · 4 providers</div>
+            <div class="s-desc">NemApi v4.0 · 7 providers · stats persistées</div>
           </div>
         </div>
       </div>
@@ -120,10 +151,6 @@
 
 <script src="/admin.js"></script>
 <script>
-function fmtCost(cost) {
-  return "$" + (cost || 0).toFixed(4);
-}
-
 function renderDistribution(stats) {
   const el = $("distribution-chart");
   const providers = Object.entries(stats.providers || {});
@@ -133,16 +160,17 @@ function renderDistribution(stats) {
     return;
   }
   el.innerHTML = providers
+    .filter(([, d]) => (d.requests || 0) > 0)
     .map(([id, data]) => {
       const pct = total ? (data.requests / total) * 100 : 0;
       const color = PCOLORS[id] || "var(--blue)";
       return `<div class="bar-row">
-        <div class="label" style="color:${color}">${esc(id)}</div>
+        <div class="label">${providerBadge(id)}</div>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
         <div class="val">${pct.toFixed(0)}%</div>
       </div>`;
     })
-    .join("");
+    .join("") || '<span style="color:var(--faint)">—</span>';
 }
 
 function renderProviderStats(stats) {
@@ -155,16 +183,36 @@ function renderProviderStats(stats) {
   el.innerHTML = providers
     .map(([id, data]) => {
       const color = PCOLORS[id] || "var(--blue)";
-      const tokens = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
+      const pin = data.prompt_tokens || 0;
+      const pout = data.completion_tokens || 0;
       return `<div class="provider" style="--pcolor:${color};margin-bottom:10px">
         <div class="head">
-          <span class="pname"><span class="pdot"></span>${esc(id)}</span>
+          ${providerBadge(id)}
           <span class="badge ok">${fmtNum(data.requests)} req</span>
         </div>
-        <div class="purl">${fmtNum(tokens)} tokens · ${fmtCost(data.cost)}</div>
+        <div class="token-split" style="margin:8px 0 4px">
+          <span class="token-chip">in <strong>${fmtNum(pin)}</strong></span>
+          <span class="token-chip">out <strong>${fmtNum(pout)}</strong></span>
+          <span class="token-chip">${fmtCost(data.cost)}</span>
+        </div>
       </div>`;
     })
     .join("");
+}
+
+function renderPricing(stats) {
+  const body = $("pricing-body");
+  const pricing = stats.pricing || {};
+  const rows = Object.keys(PCOLORS).map((id) => {
+    const p = pricing[id] || (stats.providers && stats.providers[id] && stats.providers[id].pricing) || {};
+    return `<tr>
+      <td>${providerBadge(id)}</td>
+      <td style="color:var(--muted)">${esc(p.label || providerLabel(id))}</td>
+      <td class="num">${p.prompt_per_1k != null ? "$" + Number(p.prompt_per_1k).toFixed(5) : "—"}</td>
+      <td class="num">${p.completion_per_1k != null ? "$" + Number(p.completion_per_1k).toFixed(5) : "—"}</td>
+    </tr>`;
+  });
+  body.innerHTML = rows.join("");
 }
 
 async function refresh() {
@@ -179,12 +227,17 @@ async function refresh() {
     const totalCompletion = stats.completion_tokens || 0;
     $("total-requests").textContent = fmtNum(stats.total_requests);
     $("total-tokens").textContent = fmtNum(totalPrompt + totalCompletion);
-    $("token-breakdown").textContent = `${fmtNum(totalPrompt)} + ${fmtNum(totalCompletion)}`;
+    $("token-in").textContent = fmtNum(totalPrompt);
+    $("token-out").textContent = fmtNum(totalCompletion);
     $("total-cost").textContent = fmtCost(stats.estimated_cost);
     $("uptime-display").textContent = fmtUptime(stats.uptime_seconds);
     $("auto-config-status").textContent = settings.auto_config ? "Activée" : "Désactivée";
+    if (stats.updated_at) {
+      $("persist-note").textContent = "sauvé · " + String(stats.updated_at).replace("T", " ");
+    }
     renderDistribution(stats);
     renderProviderStats(stats);
+    renderPricing(stats);
   } catch (e) {
     setConn(false, false);
     if ($("sconn")) $("sconn").textContent = "Proxy inaccessible : " + e.message;
@@ -192,8 +245,18 @@ async function refresh() {
   }
 }
 
+$("btn-clear-stats").addEventListener("click", async () => {
+  if (!confirm("Effacer tout l'historique analytics (requêtes, tokens, coûts) ?")) return;
+  try {
+    await api("/stats/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    await refresh();
+  } catch (e) {
+    alert("Erreur: " + e.message);
+  }
+});
+
 refresh();
-setInterval(refresh, 1500);
+setInterval(refresh, 2000);
 </script>
 </body>
 </html>

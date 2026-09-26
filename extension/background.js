@@ -1,23 +1,29 @@
-/** NemApi v3.0 Firefox background: parallel jobs per provider + wait for page ready after fresh-chat. */
+/** NemApi v4.0 Chromium background: parallel jobs per provider + wait for page ready after fresh-chat. */
 "use strict";
 
-const PROXY = "http://127.0.0.1:8080";
+const PROXY = "http://100.115.92.14:8090";
 const PROVIDER_MATCH = [
   { id: "deepseek", re: /chat\.deepseek\.com/i },
   { id: "qwen", re: /chat\.qwen\.ai|qianwen\.com/i },
   { id: "claude", re: /claude\.ai/i },
   { id: "gemini", re: /gemini\.google\.com/i },
+  { id: "chatgpt", re: /chatgpt\.com|chat\.openai\.com/i },
+  { id: "kimi", re: /kimi\.com|kimi\.ai|moonshot\.cn/i },
+  { id: "zai", re: /chat\.z\.ai|\.z\.ai|chatglm\.cn|bigmodel\.cn/i },
 ];
 const PROVIDER_HOME = {
   deepseek: "https://chat.deepseek.com/",
   qwen: "https://chat.qwen.ai/",
   claude: "https://claude.ai/new",
   gemini: "https://gemini.google.com/app",
+  chatgpt: "https://chatgpt.com/",
+  kimi: "https://www.kimi.ai/",
+  zai: "https://chat.z.ai/",
 };
 
 let pollTimer = null;
 let targetTabs = {};
-/** @type {Record<string, { jobId: string, startedAt: number, freshChat: boolean }>} */
+/** @type {Record<string, { jobId: string, startedAt: number, freshChat: boolean, tabId: number }>} */
 let activeJobs = {};
 /** Providers currently navigating to a blank chat / waiting for composer */
 let settlingProviders = {};
@@ -37,6 +43,7 @@ function anyBusy() {
 function isProviderFree(provider) {
   return !activeJobs[provider] && !settlingProviders[provider];
 }
+
 async function extensionLog(message, level = "info") {
   try {
     await fetch(PROXY + "/extension/log", {
@@ -46,8 +53,9 @@ async function extensionLog(message, level = "info") {
     });
   } catch (_) {}
 }
+
 async function listAiTabs() {
-  const tabs = await browser.tabs.query({});
+  const tabs = await chrome.tabs.query({});
   return tabs
     .map((tab) => ({
       id: tab.id,
@@ -59,6 +67,7 @@ async function listAiTabs() {
     }))
     .filter((tab) => tab.provider);
 }
+
 async function reportTabs() {
   try {
     await fetch(PROXY + "/extension/tabs", {
@@ -77,6 +86,7 @@ async function reportTabs() {
     return false;
   }
 }
+
 async function pullConfig() {
   try {
     const response = await fetch(PROXY + "/extension/config", { cache: "no-store" });
@@ -88,6 +98,7 @@ async function pullConfig() {
     return false;
   }
 }
+
 function schedule(ms) {
   if (pollTimer) clearTimeout(pollTimer);
   pollTimer = setTimeout(doPoll, ms);
@@ -95,7 +106,7 @@ function schedule(ms) {
 
 async function injectScripts(tabId) {
   try {
-    await browser.scripting.executeScript({
+    await chrome.scripting.executeScript({
       target: { tabId },
       files: [
         "providers/base.js",
@@ -103,6 +114,9 @@ async function injectScripts(tabId) {
         "providers/qwen.js",
         "providers/claude.js",
         "providers/gemini.js",
+        "providers/chatgpt.js",
+        "providers/kimi.js",
+        "providers/zai.js",
         "content.js",
       ],
     });
@@ -115,7 +129,7 @@ async function waitTabComplete(tabId, timeoutMs = 30000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
     try {
-      const t = await browser.tabs.get(tabId);
+      const t = await chrome.tabs.get(tabId);
       if (t.status === "complete") return true;
     } catch (_) {
       return false;
@@ -134,7 +148,7 @@ async function waitForComposerReady(tabId, timeoutMs = 25000) {
   while (Date.now() - t0 < timeoutMs) {
     try {
       await injectScripts(tabId);
-      const reply = await browser.tabs.sendMessage(tabId, { action: "ping" });
+      const reply = await chrome.tabs.sendMessage(tabId, { action: "ping" });
       if (reply && reply.pong && reply.hasInput) {
         await extensionLog(`Composer ready on tab ${tabId}`);
         return true;
@@ -154,7 +168,7 @@ async function navigateToNewChat(provider, tabId) {
   settlingProviders[provider] = true;
   try {
     await extensionLog(`Fresh-chat URL → ${provider}: ${url}`);
-    await browser.tabs.update(tabId, { url, active: false });
+    await chrome.tabs.update(tabId, { url, active: false });
     await waitTabComplete(tabId, 30000);
     await delay(1200);
     await injectScripts(tabId);
@@ -195,214 +209,256 @@ function releaseJobSlot(provider, jobId) {
   clearJob(provider, jobId);
 }
 
-/**
- * Timeout check for long-running jobs (per provider).
- */
-async function checkTimeouts() {
-  const now = Date.now();
-  for (const [provider, info] of Object.entries(activeJobs)) {
-    if (now - info.startedAt <= 230000) continue;
-    const timedOutId = info.jobId;
-    await extensionLog(
-      `Job ${timedOutId.slice(0, 8)} (${provider}) exceeded extension timeout (230s)`,
-      "error"
-    );
-    try {
-      const tabId = targetTabs[provider];
-      if (Number.isInteger(tabId)) {
-        await browser.tabs.sendMessage(tabId, { action: "stopAutomation" }).catch(() => {});
-      }
-    } catch (_) {}
-    await postResult(timedOutId, "error", "Extension-side timeout (230s) waiting for AI response");
-    clearJob(provider, timedOutId);
-  }
-}
-
-/**
- * Pull up to one job per free provider so DeepSeek + Gemini (etc.) run in parallel.
- * Proxy already serializes per provider via current_jobs; extension must not
- * use a single global busy flag.
- */
-async function doPoll() {
-  if (pollInFlight) return schedule(400);
-  pollInFlight = true;
-  try {
-    await checkTimeouts();
-    const online = await pullConfig();
-    await reportTabs();
-    if (!online) return schedule(2500);
-
-    // Pull as many free-provider jobs as the proxy can give (max 4 providers)
-    let pulled = 0;
-    const maxPull = 4;
-    while (pulled < maxPull) {
-      const response = await fetch(PROXY + "/job", { cache: "no-store" });
-      const job = await response.json();
-      if (!job || job.action !== "ask" || !job.jobId) break;
-
-      const provider = job.provider || null;
-      if (!provider) {
-        await postResult(job.jobId, "error", "Job missing provider");
-        continue;
-      }
-      // Proxy should only dispatch free providers; double-check locally
-      if (!isProviderFree(provider)) {
-        // Race: mark complete as error and let client retry — should be rare
-        await extensionLog(
-          `Job ${job.jobId.slice(0, 8)} for busy provider ${provider} — rejecting`,
-          "warn"
-        );
-        await postResult(job.jobId, "error", `Provider ${provider} is already running a job`);
-        continue;
-      }
-
-      activeJobs[provider] = {
-        jobId: job.jobId,
-        startedAt: Date.now(),
-        freshChat: !!job.freshChat,
-      };
-      pulled += 1;
-      // Fire and forget — do not await so other providers can start immediately
-      executeJob(job).catch(async (err) => {
-        await extensionLog(`executeJob crash: ${err.message || err}`, "error");
-        await postResult(job.jobId, "error", err.message || String(err));
-        clearJob(provider, job.jobId);
-      });
+// Listen for messages from content scripts
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === "automationResult") {
+    const provider = msg.provider;
+    if (provider) {
+      releaseJobSlot(provider, msg.jobId);
+      postResult(msg.jobId, "result", msg.result);
+      extensionLog(`Job ${msg.jobId} completed on ${provider}`);
     }
-
-    // Faster poll while work is running so free providers pick up new jobs quickly
-    schedule(anyBusy() ? 600 : 1000);
-  } catch (error) {
-    await extensionLog(`Polling failed: ${error.message || error}`, "error");
-    schedule(2500);
-  } finally {
-    pollInFlight = false;
-  }
-}
-
-async function executeJob(job) {
-  const { jobId, question, provider, model } = job;
-  const tabId = targetTabs[provider];
-  if (!Number.isInteger(tabId)) {
-    await postResult(jobId, "error", `No selected ${provider} tab. Select a ${provider} tab in the admin panel.`);
-    clearJob(provider, jobId);
-    return;
-  }
-  const tab = (await listAiTabs()).find((item) => item.id === tabId);
-  if (!tab || tab.provider !== provider) {
-    await postResult(jobId, "error", `Selected tab ${tabId} is not an available ${provider} tab.`);
-    clearJob(provider, jobId);
-    return;
-  }
-  try {
-    await extensionLog(
-      `Dispatch ${jobId.slice(0, 8)} → ${provider}/${model}, tab ${tabId} [parallel active: ${Object.keys(activeJobs).join(",")}]`
-    );
-    // Do NOT force active:true — parallel jobs must not steal focus from each other.
-    // Messaging works on background tabs in Firefox.
-    try {
-      await browser.tabs.update(tabId, { active: false }).catch(() => {});
-    } catch (_) {}
-    await waitTabComplete(tabId, 15000);
-    await injectScripts(tabId);
-    const ready = await waitForComposerReady(tabId, 20000);
-    if (!ready) {
-      await extensionLog("Composer still missing — attempting one more inject", "warn");
-      await delay(800);
-      await injectScripts(tabId);
-    }
-    await delay(200);
-
-    let reply = null;
-    let lastErr = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        await injectScripts(tabId);
-        reply = await browser.tabs.sendMessage(tabId, {
-          action: "runAutomation",
-          jobId,
-          question,
-          provider,
-          model,
-          premiumMd: job.premiumMd !== false,
-        });
-        if (reply && reply.ok) break;
-        lastErr = (reply && reply.error) || "Content script did not accept the job";
-      } catch (e) {
-        lastErr = e.message || String(e);
-        await extensionLog(`sendMessage attempt ${attempt}/3 failed: ${lastErr}`, "warn");
-        await delay(600);
-        await injectScripts(tabId);
-      }
-    }
-    if (!reply || !reply.ok) {
-      throw new Error(lastErr || "Content script did not accept the job");
-    }
-    // Slot stays occupied until automationResult / automationError for this jobId
-  } catch (error) {
-    await extensionLog(`Dispatch failed (${provider}): ${error.message || error}`, "error");
-    await postResult(jobId, "error", error.message || String(error));
-    clearJob(provider, jobId);
-  }
-}
-
-browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.action === "automationResult") {
-    (async () => {
-      try {
-        const provider =
-          message.provider ||
-          Object.keys(activeJobs).find((p) => activeJobs[p].jobId === message.jobId) ||
-          null;
-        await extensionLog(
-          `Response received for ${message.jobId.slice(0, 8)} (${(message.result || "").length} chars) provider=${provider || "?"}`
-        );
-        await postResult(message.jobId, "result", message.result || "");
-
-        const info = provider ? activeJobs[provider] : null;
-        const doFresh = !!(info && info.freshChat && info.jobId === message.jobId);
-        const tabId = provider ? targetTabs[provider] : null;
-
-        // Release this provider immediately so the next job for it can start;
-        // fresh-chat only blocks THIS provider, not others.
-        if (provider) clearJob(provider, message.jobId);
-
-        if (doFresh && provider && Number.isInteger(tabId)) {
-          try {
-            await navigateToNewChat(provider, tabId);
-          } catch (e) {
-            await extensionLog(`fresh-chat after result: ${e.message || e}`, "warn");
-          }
-        }
-      } catch (e) {
-        await extensionLog(`automationResult handler: ${e.message || e}`, "error");
-        const provider = message.provider;
-        if (provider) clearJob(provider, message.jobId);
-      }
-      sendResponse({ ok: true });
-    })();
-    return true;
-  }
-  if (message.action === "automationError") {
-    (async () => {
-      await extensionLog(`Automation error: ${message.error}`, "error");
-      await postResult(message.jobId, "error", message.error || "Automation failed");
-      const provider =
-        message.provider ||
-        Object.keys(activeJobs).find((p) => activeJobs[p].jobId === message.jobId);
-      if (provider) clearJob(provider, message.jobId);
-      sendResponse({ ok: true });
-    })();
-    return true;
-  }
-  if (message.action === "contentReady") {
-    reportTabs();
     sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "automationError") {
+    const provider = msg.provider;
+    if (provider) {
+      releaseJobSlot(provider, msg.jobId);
+      postResult(msg.jobId, "error", msg.error);
+      extensionLog(`Job ${msg.jobId} failed on ${provider}: ${msg.error}`, "error");
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "contentReady") {
+    const tabId = sender.tab ? sender.tab.id : null;
+    if (tabId) {
+      const provider = providerFromUrl(sender.tab && sender.tab.url);
+      if (provider) {
+        targetTabs[provider] = tabId;
+        extensionLog(`Content ready on ${provider} tab ${tabId}`);
+      }
+      // Proactively install MAIN-world clipboard hook (CSP-safe)
+      installPageClipHook(tabId).catch(() => {});
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "installPageClipHook") {
+    const tabId = sender.tab ? sender.tab.id : msg.tabId;
+    if (tabId) {
+      installPageClipHook(tabId)
+        .then(() => sendResponse({ ok: true }))
+        .catch((e) => sendResponse({ ok: false, error: String(e) }));
+      return true;
+    }
+    sendResponse({ ok: false, error: "no tab" });
     return true;
   }
   return false;
 });
 
-browser.action.onClicked.addListener(() => browser.tabs.create({ url: PROXY + "/" }).catch(() => {}));
-console.log("[NemApi] Background started (parallel per-provider)");
+/**
+ * Inject clipboard intercept into the page MAIN world so writeText from React
+ * is visible to the isolated content script via CustomEvent.
+ */
+async function installPageClipHook(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: function () {
+      if (window.__NEMAPI_CLIP_HOOK_INSTALLED__) return;
+      window.__NEMAPI_CLIP_HOOK_INSTALLED__ = true;
+      function emit(text, force) {
+        try {
+          if (typeof text !== "string") {
+            if (text == null) return;
+            try {
+              text = String(text);
+            } catch (_) {
+              return;
+            }
+          }
+          if (!text || text === "[object Object]") return;
+          // Skip HTML payloads unless forced (plain is preferred)
+          if (
+            !force &&
+            /<\/?(p|div|span|strong|em|br|ul|ol|li|h[1-6])\b/i.test(text) &&
+            text.indexOf("<") !== -1
+          ) {
+            return;
+          }
+          window.dispatchEvent(new CustomEvent("__nemapi_clip_capture__", { detail: text }));
+        } catch (_) {}
+      }
+      try {
+        const clip = navigator.clipboard;
+        if (!clip) return;
+        if (typeof clip.writeText === "function") {
+          const orig = clip.writeText.bind(clip);
+          clip.writeText = async function (text) {
+            emit(text, true); // writeText is always plain
+            return orig(text);
+          };
+        }
+        if (typeof clip.write === "function") {
+          const origW = clip.write.bind(clip);
+          clip.write = async function (items) {
+            try {
+              for (const item of items || []) {
+                if (!item || !item.types) continue;
+                const types = Array.from(item.types || []);
+                // Prefer text/plain only for the event payload
+                if (types.includes("text/plain")) {
+                  const blob = await item.getType("text/plain");
+                  emit(await blob.text(), true);
+                } else {
+                  for (const type of types) {
+                    if (String(type).startsWith("text/")) {
+                      const blob = await item.getType(type);
+                      emit(await blob.text(), type === "text/plain");
+                    }
+                  }
+                }
+              }
+            } catch (_) {}
+            return origW(items);
+          };
+        }
+      } catch (_) {}
+      document.addEventListener(
+        "copy",
+        function (e) {
+          try {
+            const t = (e.clipboardData && e.clipboardData.getData("text/plain")) || "";
+            if (t) emit(t, true);
+          } catch (_) {}
+        },
+        true
+      );
+    },
+  });
+}
+
+// Main polling loop - FETCH JOBS FROM /job
+async function doPoll() {
+  if (pollInFlight) {
+    schedule(2000);
+    return;
+  }
+  pollInFlight = true;
+  try {
+    await pullConfig();
+    await reportTabs();
+
+    // Watchdog: libère les jobs bloqués (le proxy timeout à 240s, donc tout
+    // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).
+    try {
+      const now = Date.now();
+      for (const [provider, job] of Object.entries(activeJobs)) {
+        if (now - job.startedAt > 230000) {
+          delete activeJobs[provider];
+          postResult(job.jobId, "error", "job abandoned locally (watchdog)");
+          extensionLog(`Watchdog: released stuck ${provider} job ${job.jobId}`, "warn");
+        }
+      }
+    } catch (_) {}
+
+    // Check for pending jobs from proxy via /job endpoint
+    try {
+      const response = await fetch(PROXY + "/job", {
+        cache: "no-store",
+        signal: AbortSignal.timeout(30000),   // MV3: ne jamais laisser un fetch pendu figer le poll
+      });
+      const jobData = await response.json();
+
+      if (jobData && jobData.action === "ask") {
+        const provider = jobData.provider;
+        const tabId = targetTabs[provider];
+
+        if (!tabId) {
+          extensionLog(`No tab for provider ${provider}`, "warn");
+          postResult(jobData.jobId, "error", `No tab configured for ${provider}`);
+          return;
+        }
+
+        if (activeJobs[provider]) {
+          extensionLog(`Provider ${provider} busy`, "warn");
+          return;
+        }
+
+        if (settlingProviders[provider]) {
+          extensionLog(`Provider ${provider} settling`, "warn");
+          return;
+        }
+
+        // Start the job
+        activeJobs[provider] = {
+          jobId: jobData.jobId,
+          startedAt: Date.now(),
+          freshChat: false,
+          tabId: tabId
+        };
+
+        try {
+          extensionLog(`Starting job ${jobData.jobId} on ${provider}`);
+          await injectScripts(tabId);
+
+          // Ensure fresh chat if needed
+          if (jobData.freshChat !== false) {
+            await navigateToNewChat(provider, tabId);
+          }
+
+          await chrome.tabs.sendMessage(tabId, {
+            action: "runAutomation",
+            jobId: jobData.jobId,
+            question: jobData.question,
+            provider: provider,
+            model: jobData.model,
+            premiumMd: jobData.premiumMd !== false,
+          });
+        } catch (e) {
+          extensionLog(`Job start failed: ${e.message || e}`, "error");
+          releaseJobSlot(provider, jobData.jobId);
+          postResult(jobData.jobId, "error", e.message || String(e));
+        }
+      }
+    } catch (e) {
+      // No pending jobs or proxy not ready - ignore
+    }
+  } catch (e) {
+    await extensionLog(`Poll error: ${e.message || e}`, "error");
+  } finally {
+    pollInFlight = false;
+    schedule(3000);
+  }
+}
+
+chrome.action.onClicked.addListener(async () => {
+  await chrome.tabs.create({ url: "http://100.115.92.14:8090/admin.html" });
+});
+
+// Start polling
 doPoll();
+
+// MV3 keep-alive: le service worker peut être suspendu après ~30s
+// d'inactivité, ce qui tue les setTimeout du poll. Une alarme périodique
+// réveille le SW et relance doPoll si la boucle s'est arrêtée.
+chrome.alarms.create("nemapi-poll", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "nemapi-poll") {
+    pollInFlight = false;   // décoince un fetch mort (navigateur revenu de veille)
+    doPoll();
+  }
+});
+
+// Clean up on tab close
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [provider, job] of Object.entries(activeJobs)) {
+    if (job.tabId === tabId) {
+      delete activeJobs[provider];
+      extensionLog(`Cleaned up job for closed tab ${tabId}`);
+    }
+  }
+});

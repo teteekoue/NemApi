@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Configuration</title>
 <link rel="stylesheet" href="/admin.css">
-<link rel="icon" href="/extension/icons/logo.svg" type="image/svg+xml">
+<link rel="icon" href="/extension/icons/logo-32.png" type="image/png">
 </head>
 <body>
 <button class="menu-btn" aria-label="Menu" type="button">
@@ -16,7 +16,7 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo"><img src="/extension/icons/logo.svg" alt="NemApi"></div>
+      <div class="logo"><img src="/extension/icons/logo-48.png" alt="NemApi"></div>
       <div>
         <div class="name">NemApi</div>
         <div class="tag">Pont API local</div>
@@ -47,7 +47,7 @@
     </nav>
     <div class="side-foot">
       <div class="row"><i id="sdot" class="dot"></i><span id="sconn">Extension non connectée</span></div>
-      <div class="ver">NemApi v3.0 · OpenAI-compatible</div>
+      <div class="ver">NemApi v4.0 · 7 providers</div>
     </div>
   </aside>
 
@@ -66,7 +66,7 @@
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
           Onglets fournisseurs
         </h3>
-        <p class="desc">Choisis l'onglet Firefox à utiliser pour chaque service. Aucun basculement automatique vers un autre provider.</p>
+        <p class="desc">Choisis l'onglet navigateur à utiliser pour chaque service. Aucun basculement automatique vers un autre provider.</p>
         <div id="cfg-providers" class="providers"><span style="color:var(--faint)">Chargement…</span></div>
       </div>
 
@@ -143,14 +143,14 @@ function renderCfgProviders(state) {
       const color = PCOLORS[p.id] || "var(--blue)";
       if (!tabs.length) {
         return `<div class="provider" style="--pcolor:${color}">
-          <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge no">Hors ligne</span></div>
-          <div class="purl">Ouvre un onglet ${esc(p.id)} dans Firefox et recharge l'extension.</div>
+          <div class="head">${providerBadge(p.id)}<span class="badge no">Hors ligne</span></div>
+          <div class="purl">Ouvre un onglet ${esc(p.id)} dans le navigateur et recharge l'extension.</div>
         </div>`;
       }
       return tabs
         .map(
           (tab) => `<div class="provider" style="--pcolor:${color}">
-        <div class="head"><span class="pname"><span class="pdot"></span>${esc(p.id)}</span><span class="badge ${selected === tab.id ? "ok" : "no"}">${selected === tab.id ? "Actif" : "Disponible"}</span></div>
+        <div class="head">${providerBadge(p.id)}<span class="badge ${selected === tab.id ? "ok" : "no"}">${selected === tab.id ? "Actif" : "Disponible"}</span></div>
         <div class="purl" title="${esc(tab.url)}">${esc(tab.title || tab.url)}</div>
         <button type="button" class="${selected === tab.id ? "btn-chosen" : "btn-ghost"} btn-sm" onclick="choose('${p.id}',${tab.id})">${selected === tab.id ? "Sélectionné" : "Utiliser cet onglet"}</button>
       </div>`
@@ -165,9 +165,8 @@ function renderCfgModels() {
     .map(
       (p) => `
     <div style="margin-bottom:14px">
-      <div style="font-weight:750;text-transform:capitalize;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-        <span class="pdot" style="width:9px;height:9px;border-radius:50%;background:${PCOLORS[p.id] || "var(--blue)"};display:inline-block"></span>
-        ${esc(p.display_name || p.id)}
+      <div style="font-weight:750;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+        ${providerBadge(p.id)}
       </div>
       <div class="model-list">${(p.models || []).map((m) => `<span class="model-chip">${esc(m)}</span>`).join("") || '<span class="model-chip">—</span>'}</div>
     </div>`

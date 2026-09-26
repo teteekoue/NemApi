@@ -1,5 +1,5 @@
 /**
- * NemApi v3.0 – content script router
+ * NemApi v4.0 – content script router
  * Accepts jobs, waits for page readiness is handled by background.
  * One job at a time per tab; finished job ids are tracked briefly to ignore duplicates.
  */
@@ -24,6 +24,51 @@
     return p ? p.id : null;
   }
 
+  /** Wait until the provider is not generating anymore (previous job leftover). */
+  async function waitForIdle(provider, timeoutMs) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      let busy = false;
+      try { busy = !!(provider.isGenerating && provider.isGenerating()); } catch (_) {}
+      if (!busy) return true;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    return false; // continue anyway; sendPrompt will handle it
+  }
+
+  /** Clear any stale text left in the editor from a previous aborted job. */
+  function clearEditor(provider) {
+    try {
+      const input = provider.findInput && provider.findInput();
+      if (!input) return;
+      const current = (input.textContent || input.value || "").trim();
+      if (!current) return;
+      console.log("[NemApi] Clearing stale editor text before new job");
+      if ("value" in input) { input.value = ""; }
+      else { input.textContent = ""; }
+      try { input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" })); } catch (_) {}
+    } catch (_) {}
+  }
+
+  /**
+   * Detect "started": a NEW model-response bubble appeared (even with text
+   * identical to the previous answer), or the provider flipped to generating.
+   */
+  async function waitForGenerationStart(provider, previous, prevCount, timeoutMs) {
+    const t0 = Date.now();
+    const prev = (previous || "").trim();
+    while (Date.now() - t0 < timeoutMs) {
+      try {
+        if (prevCount && provider.getResponseCount && provider.getResponseCount() > prevCount) return true;
+        if (provider.isGenerating && provider.isGenerating()) return true;
+        const cur = (provider.getLastResponse && provider.getLastResponse() || "").trim();
+        if (cur && cur !== prev) return true;
+      } catch (_) {}
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return false;
+  }
+
   function rememberFinished(jobId) {
     const set = window.__NEMAPI_FINISHED_JOBS__;
     set.add(jobId);
@@ -40,7 +85,7 @@
       return;
     }
     if (window.__NEMAPI_RUNNING_JOB__ && window.__NEMAPI_RUNNING_JOB__ !== jobId) {
-      browser.runtime.sendMessage({
+      chrome.runtime.sendMessage({
         action: "automationError",
         jobId,
         error: "Tab is already running another job",
@@ -55,7 +100,7 @@
     window.__NEMAPI_PREMIUM_MD__ = premiumMd !== false;
     const provider = resolveProvider();
     if (!provider) {
-      browser.runtime.sendMessage({
+      chrome.runtime.sendMessage({
         action: "automationError",
         jobId,
         error: "No provider matched this page: " + location.hostname,
@@ -63,7 +108,7 @@
       return;
     }
     if (expectedProvider && provider.id !== expectedProvider) {
-      browser.runtime.sendMessage({
+      chrome.runtime.sendMessage({
         action: "automationError",
         jobId,
         error: `Provider mismatch: requested ${expectedProvider}, current page is ${provider.id}`,
@@ -79,11 +124,25 @@
         await new Promise((r) => setTimeout(r, 800));
       }
       const previous = (provider.getLastResponse && provider.getLastResponse()) || "";
+      // Native-context hardening: if the previous job was left mid-generation
+      // (watchdog abort, navigation, retry), the provider may still be busy and
+      // the editor may hold unsent text.  Wait for idle, then clear the editor.
+      await waitForIdle(provider, 90000);
+      clearEditor(provider);
+      // Snapshot the bubble count BEFORE sending — a new response bubble is the
+      // reliable "fresh answer" signal even when the text is identical.
+      const prevCount = provider.getResponseCount ? provider.getResponseCount() : 0;
       await provider.sendPrompt(question);
       if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
-      const text = await provider.waitForResponse(previous);
+      // If the model never STARTS generating (editor send swallowed, silent
+      // rate-limit banner, stale tab), fail fast instead of polling old text
+      // until the watchdog kicks in.
+      const started = await waitForGenerationStart(provider, previous, prevCount, 25000);
+      if (!started) throw new Error("Provider did not start responding (stale tab or rate limit)");
       if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
-      await browser.runtime.sendMessage({
+      const text = await provider.waitForResponse(previous, prevCount);
+      if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
+      await chrome.runtime.sendMessage({
         action: "automationResult",
         jobId,
         result: text || "",
@@ -91,7 +150,7 @@
       });
     } catch (e) {
       try {
-        await browser.runtime.sendMessage({
+        await chrome.runtime.sendMessage({
           action: "automationError",
           jobId,
           error: e.message || String(e),
@@ -104,7 +163,7 @@
     }
   }
 
-  browser.runtime.onMessage.addListener((msg, _s, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     if (msg.action === "runAutomation") {
       runJob(msg.jobId, msg.question, msg.provider, msg.model, msg.premiumMd !== false);
       sendResponse({ ok: true, provider: detectProviderId() });
@@ -143,6 +202,6 @@
   });
 
   try {
-    browser.runtime.sendMessage({ action: "contentReady" }).catch(() => {});
+    chrome.runtime.sendMessage({ action: "contentReady" }).catch(() => {});
   } catch (_) {}
 })();
