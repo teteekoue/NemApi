@@ -37,8 +37,8 @@
     "*://*.chatglm.cn/*",
     "*://bigmodel.cn/*",
     "*://*.bigmodel.cn/*",
-    "http://100.115.92.14:8090/*",
-    "http://100.115.92.14:8090/*"
+    "http://127.0.0.1:8090/*",
+    "http://localhost:8090/*"
   ],
   "background": {
     "service_worker": "background.js"

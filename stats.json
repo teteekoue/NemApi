@@ -1,0 +1,51 @@
+{
+  "requests": 228,
+  "prompt_tokens": 199477,
+  "completion_tokens": 40161,
+  "estimated_cost": 0.21935501999999993,
+  "providers": {
+    "deepseek": {
+      "requests": 140,
+      "prompt_tokens": 79937,
+      "completion_tokens": 37898,
+      "cost": 0.021802620000000005
+    },
+    "qwen": {
+      "requests": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cost": 0.0
+    },
+    "claude": {
+      "requests": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cost": 0.0
+    },
+    "gemini": {
+      "requests": 81,
+      "prompt_tokens": 119396,
+      "completion_tokens": 1836,
+      "cost": 0.1956179999999999
+    },
+    "chatgpt": {
+      "requests": 0,
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cost": 0.0
+    },
+    "kimi": {
+      "requests": 3,
+      "prompt_tokens": 24,
+      "completion_tokens": 338,
+      "cost": 0.0013747999999999998
+    },
+    "zai": {
+      "requests": 4,
+      "prompt_tokens": 120,
+      "completion_tokens": 89,
+      "cost": 0.0005596
+    }
+  },
+  "updated_at": "2026-09-26T14:03:56"
+}

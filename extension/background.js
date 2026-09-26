@@ -1,7 +1,7 @@
 /** NemApi v4.0 Chromium background: parallel jobs per provider + wait for page ready after fresh-chat. */
 "use strict";
 
-const PROXY = "http://100.115.92.14:8090";
+const PROXY = "http://127.0.0.1:8090";
 const PROVIDER_MATCH = [
   { id: "deepseek", re: /chat\.deepseek\.com/i },
   { id: "qwen", re: /chat\.qwen\.ai|qianwen\.com/i },
@@ -351,7 +351,7 @@ async function doPoll() {
   try {
     await pullConfig();
     await reportTabs();
-
+    
     // Watchdog: libère les jobs bloqués (le proxy timeout à 240s, donc tout
     // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).
     try {
@@ -372,44 +372,44 @@ async function doPoll() {
         signal: AbortSignal.timeout(30000),   // MV3: ne jamais laisser un fetch pendu figer le poll
       });
       const jobData = await response.json();
-
+      
       if (jobData && jobData.action === "ask") {
         const provider = jobData.provider;
         const tabId = targetTabs[provider];
-
+        
         if (!tabId) {
           extensionLog(`No tab for provider ${provider}`, "warn");
           postResult(jobData.jobId, "error", `No tab configured for ${provider}`);
           return;
         }
-
+        
         if (activeJobs[provider]) {
           extensionLog(`Provider ${provider} busy`, "warn");
           return;
         }
-
+        
         if (settlingProviders[provider]) {
           extensionLog(`Provider ${provider} settling`, "warn");
           return;
         }
-
+        
         // Start the job
-        activeJobs[provider] = {
-          jobId: jobData.jobId,
-          startedAt: Date.now(),
+        activeJobs[provider] = { 
+          jobId: jobData.jobId, 
+          startedAt: Date.now(), 
           freshChat: false,
           tabId: tabId
         };
-
+        
         try {
           extensionLog(`Starting job ${jobData.jobId} on ${provider}`);
           await injectScripts(tabId);
-
+          
           // Ensure fresh chat if needed
           if (jobData.freshChat !== false) {
             await navigateToNewChat(provider, tabId);
           }
-
+          
           await chrome.tabs.sendMessage(tabId, {
             action: "runAutomation",
             jobId: jobData.jobId,
@@ -436,7 +436,7 @@ async function doPoll() {
 }
 
 chrome.action.onClicked.addListener(async () => {
-  await chrome.tabs.create({ url: "http://100.115.92.14:8090/admin.html" });
+  await chrome.tabs.create({ url: "http://127.0.0.1:8090/admin.html" });
 });
 
 // Start polling

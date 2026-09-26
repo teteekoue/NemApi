@@ -327,7 +327,7 @@
   }
 
   global.NemApiProviders = global.NemApiProviders || {};
-
+  
   function getResponseCount() {
     try {
       return getMessageEls().length;

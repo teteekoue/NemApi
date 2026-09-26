@@ -1,5 +1,0 @@
-__pycache__/
-*.pyc
-debug_requests.json
-.DS_Store
-stats.json

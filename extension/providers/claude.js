@@ -253,7 +253,7 @@
   }
 
   global.NemApiProviders = global.NemApiProviders || {};
-
+  
   function getResponseCount() {
     try {
       // Prefer completed assistant turns with a Copy action-bar button
