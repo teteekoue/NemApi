@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Configuration</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="config" data-title="Configuration">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Configuration</h1>
+          <div class="sub">Onglets fournisseurs, modèles et paramètres généraux du proxy.</div>
+        </div>
+      </div>
+
+      <div class="card mb">
+        <div class="card-head"><div><h3 id="h-tabs">Onglets fournisseurs</h3>
+          <p class="desc">Choisis l'onglet navigateur à utiliser pour chaque service. Pas de basculement automatique vers un autre fournisseur.</p></div></div>
+        <div id="cfg-providers" class="providers"><div class="skeleton" style="height:96px"></div><div class="skeleton" style="height:96px"></div><div class="skeleton" style="height:96px"></div></div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-settings">Paramètres</h3><p class="desc">Comportement général du proxy (mode classique).</p></div></div>
+          <div class="setting">
+            <div><div class="s-title">Streaming (SSE)</div><div class="s-desc">Réponses en flux pour les clients qui ne précisent pas <code>stream</code>.</div></div>
+            <label class="switch"><input type="checkbox" id="cfg-stream"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><div class="s-title">Auto-configuration</div><div class="s-desc">Associe automatiquement le premier onglet détecté de chaque fournisseur.</div></div>
+            <label class="switch"><input type="checkbox" id="cfg-auto-config"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><div class="s-title">Nouvelle discussion à chaque requête</div><div class="s-desc">Ouvre un nouveau chat pour chaque requête : tout le contexte est renvoyé, sans empilement dans l'UI web.</div></div>
+            <label class="switch"><input type="checkbox" id="cfg-fresh-chat"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><div class="s-title">Markdown premium</div><div class="s-desc">Lit le markdown d'origine de la réponse (React / presse-papiers / HTML→MD), sans clic physique.</div></div>
+            <label class="switch"><input type="checkbox" id="cfg-premium-md"><span class="slider"></span></label>
+          </div>
+          <div class="setting">
+            <div><div class="s-title">Arrêter les jobs</div><div class="s-desc">Annule toutes les requêtes en attente ou en cours.</div></div>
+            <button class="btn btn-danger btn-sm" id="cfg-stop" type="button">Arrêter</button>
+          </div>
+          <div class="callout" style="margin-top:14px" id="cfg-agents-hint">
+            <span id="hint-ico"></span>
+            <div>Tu utilises un agent de code (Qwen Code…) ? Active son intégration dans
+              <a href="/integrations">Intégration agents IA</a> : contexte incrémental, requêtes annexes, suite des réponses coupées…</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-models">Modèles acceptés</h3><p class="desc">Identifiants reconnus par le proxy (le fournisseur est déduit du modèle).</p></div></div>
+          <div id="cfg-models" class="stack" style="gap:14px"><div class="skeleton" style="height:60px"></div></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+$("h-tabs").insertAdjacentHTML("afterbegin", icon("tabs"));
+$("h-settings").insertAdjacentHTML("afterbegin", icon("sliders"));
+$("h-models").insertAdjacentHTML("afterbegin", icon("book"));
+$("hint-ico").outerHTML = icon("info", "");
+
+let catalog = [];
+const SWITCHES = { "cfg-stream": "stream_enabled", "cfg-auto-config": "auto_config", "cfg-fresh-chat": "fresh_chat", "cfg-premium-md": "premium_md" };
+
+function renderProviders(state) {
+  if (!catalog.length) return;
+  const byProvider = {};
+  for (const tab of state.tabs || []) (byProvider[tab.provider] ||= []).push(tab);
+  setHTML("cfg-providers", catalog.map((p) => {
+    const tabs = byProvider[p.id] || [];
+    const selected = state.targetTabs?.[p.id];
+    const color = PCOLORS[p.id] || "var(--accent)";
+    if (!tabs.length) {
+      return `<div class="provider" style="--pcolor:${color}"><div class="head">${providerBadge(p.id)}<span class="badge">Hors ligne</span></div>
+        <div class="purl">Ouvre ${esc(providerLabel(p.id))} dans le navigateur.</div></div>`;
+    }
+    return tabs.map((tab) => {
+      const on = selected === tab.id;
+      return `<div class="provider" style="--pcolor:${color}">
+        <div class="head">${providerBadge(p.id)}<span class="badge ${on ? "ok" : ""}">${on ? "Actif" : "Disponible"}</span></div>
+        <div class="purl" title="${esc(tab.url)}">${esc(tab.title || tab.url)}</div>
+        <button type="button" class="btn btn-sm btn-block ${on ? "btn-ok" : ""}" data-provider="${esc(p.id)}" data-tab="${tab.id}" ${on ? "disabled" : ""}>${on ? "Sélectionné" : "Utiliser cet onglet"}</button></div>`;
+    }).join("");
+  }).join(""));
+}
+
+function renderModels() {
+  setHTML("cfg-models", catalog.map((p) => `<div><div style="margin-bottom:8px">${providerBadge(p.id)}</div>
+    <div class="model-list">${(p.models || []).map((m) => `<span class="model-chip">${esc(m)}</span>`).join("") || '<span class="model-chip">—</span>'}</div></div>`).join(""));
+}
+
+$("cfg-providers").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-tab]");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await post("/extension/config", { provider: btn.dataset.provider, targetTabId: Number(btn.dataset.tab) });
+    toast(`${providerLabel(btn.dataset.provider)} : onglet sélectionné`, "ok");
+  } catch (err) {
+    btn.disabled = false;
+    toast("Erreur : " + err.message, "error");
+  }
+});
+
+for (const [id, key] of Object.entries(SWITCHES)) {
+  bindSwitch(id, (checked) => post("/settings", { [key]: checked }), {
+    onDone: (checked) => toast(`${$(id).closest(".setting").querySelector(".s-title").textContent} : ${checked ? "activé" : "désactivé"}`, "ok", 1800),
+  });
+}
+$("cfg-stop").addEventListener("click", async () => {
+  if (!(await confirmDialog("Arrêter les jobs ?", "Toutes les requêtes en attente ou en cours seront annulées.", { ok: "Arrêter", danger: true }))) return;
+  try {
+    const r = await post("/stop");
+    toast(`${r.cancelled || 0} job(s) annulé(s)`, "ok");
+  } catch (err) {
+    toast("Erreur : " + err.message, "error");
+  }
+});
+
+NemUI.onState(renderProviders);
+
+poll(async () => {
+  const [providers, settings] = await Promise.all([catalog.length ? null : api("/providers"), api("/settings")]);
+  if (providers) {
+    catalog = providers.providers;
+    renderModels();
+    if (NemUI.state) renderProviders(NemUI.state);
+  }
+  for (const [id, key] of Object.entries(SWITCHES)) {
+    const el = $(id);
+    if (el && !el.disabled && el.checked !== !!settings[key]) el.checked = !!settings[key];
+  }
+}, 2500);
+</script>
+</body>
+</html>

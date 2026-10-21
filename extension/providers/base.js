@@ -223,14 +223,59 @@
    * getText() returns current assistant text; done when unchanged for stableMs.
    * Virtual-list safe: ignores previous answer and truncated prefixes of it.
    */
-  async function waitUntilStable(getText, { timeout = 180000, stableMs = 1800, pollMs = 400, previous = "" } = {}) {
+  /**
+   * Is this answer visibly unfinished? (a tool call / code block opened and
+   * never closed). Used to wait much longer before accepting it: a long file
+   * written by an agent can pause for several seconds mid-stream.
+   */
+  function looksIncomplete(text) {
+    const t = String(text || "");
+    const lastOpen = Math.max(t.lastIndexOf("<tool>"), t.lastIndexOf("<tool "), t.lastIndexOf("<tool_call>"));
+    if (lastOpen >= 0 && !/<\/tool(?:_call)?\s*>/i.test(t.slice(lastOpen))) return true;
+    // DSML parameter opened, never closed
+    const dsmlOpen = t.search(/<[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*parameter[^>]*>(?![\s\S]*<\s*\/\s*[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*parameter)/i);
+    if (dsmlOpen >= 0) return true;
+    // odd number of fence lines → a code block is still open
+    const fences = t.match(/^[ \t]*(`{3,}|~{3,})/gm) || [];
+    return fences.length % 2 === 1;
+  }
+
+  /** Overall budget of the current job (set by content.js from the proxy timeout). */
+  function jobBudgetMs(fallback) {
+    const b = Number(global.__NEMAPI_JOB_BUDGET_MS__ || 0);
+    return Math.max(fallback || 0, b > 0 ? b : 0);
+  }
+
+  function providerBusy() {
+    try {
+      const f = global.__NEMAPI_IS_BUSY__;
+      return typeof f === "function" ? !!f() : false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Wait for the answer to stop changing.
+   *  - never returns while the provider says it is generating (unless the
+   *    text has not moved for `busyStuckMs`: broken "Stop" detection);
+   *  - an unfinished-looking answer (open tool call / code block) must stay
+   *    unchanged for `incompleteStableMs` before it is accepted;
+   *  - no fixed 3-minute cap any more: the budget is the proxy job timeout,
+   *    and an answer that keeps growing is never cut.
+   * The result is flagged in global.__NEMAPI_LAST_PARTIAL__ when returned on
+   * timeout.
+   */
+  async function waitUntilStable(getText, { timeout = 180000, stableMs = 1800, pollMs = 400, previous = "", incompleteStableMs = 25000, busyStuckMs = 60000 } = {}) {
     const t0 = Date.now();
+    const budget = jobBudgetMs(timeout);
     const prev = (previous || "").trim();
     const prevFp = prev ? prev.length + ":" + prev.slice(0, 48) + ":" + prev.slice(-48) : "";
     let last = "";
     let lastFp = "";
     let stableSince = Date.now();
-    while (Date.now() - t0 < timeout) {
+    global.__NEMAPI_LAST_PARTIAL__ = false;
+    while (Date.now() - t0 < budget) {
       if (global.__NEMAPI_STOP__) throw new Error("Stopped");
       let cur = "";
       try {
@@ -252,7 +297,10 @@
       }
       const fp = cur ? cur.length + ":" + cur.slice(0, 48) + ":" + cur.slice(-48) : "";
       if (cur && fp === lastFp && cur.length > 0) {
-        if (Date.now() - stableSince >= stableMs) return cur;
+        const still = Date.now() - stableSince;
+        const busy = providerBusy();
+        const need = looksIncomplete(cur) ? Math.max(stableMs, incompleteStableMs) : stableMs;
+        if (still >= need && (!busy || still >= busyStuckMs)) return cur;
       } else {
         last = cur;
         lastFp = fp;
@@ -260,7 +308,10 @@
       }
       await sleep(pollMs);
     }
-    if (last) return last;
+    if (last) {
+      global.__NEMAPI_LAST_PARTIAL__ = true;
+      return last;
+    }
     throw new Error("Timeout waiting for response");
   }
 
@@ -390,8 +441,100 @@
    * DeepSeek: memoizedProps.markdown on .ds-markdown fiber.
    * No physical/synthetic click required.
    */
+  /**
+   * Content scripts live in an ISOLATED world: React fiber expandos set by the
+   * page are not visible here. Ask the MAIN-world bridge (page_bridge.js),
+   * synchronously, through a DOM event + attributes on the element.
+   */
+  /**
+   * Diagnostics: how was the last answer read?  "react" (original markdown,
+   * exact) > "clipboard" > "html" / "dom" (rebuilt from the rendered page:
+   * backslash escapes, $…$ and auto-linked words may be altered).
+   * Stored on window: base.js is re-injected before every job.
+   */
+  const SOURCE_RANK = { react: 4, clipboard: 3, html: 2, dom: 1 };
+  function noteExtractSource(src) {
+    try {
+      const cur = global.__NEMAPI_EXTRACT_SOURCE__;
+      if (!cur || (SOURCE_RANK[src] || 0) > (SOURCE_RANK[cur] || 0)) global.__NEMAPI_EXTRACT_SOURCE__ = src;
+    } catch (_) {}
+  }
+  function resetExtractSource() {
+    try {
+      global.__NEMAPI_EXTRACT_SOURCE__ = null;
+    } catch (_) {}
+  }
+  function getExtractSource() {
+    try {
+      return global.__NEMAPI_EXTRACT_SOURCE__ || null;
+    } catch (_) {
+      return null;
+    }
+  }
+  /** Is the MAIN-world page bridge (page_bridge.js) installed in this tab? */
+  function bridgeReady() {
+    try {
+      return document.documentElement.getAttribute("data-nemapi-bridge") === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function readMarkdownViaPage(el, propNames) {
+    if (!el || !el.setAttribute || typeof document === "undefined") return "";
+    try {
+      el.removeAttribute("data-nemapi-md");
+      el.setAttribute("data-nemapi-md-req", (propNames || []).join(","));
+      document.dispatchEvent(new CustomEvent("nemapi:read-md"));
+      const md = el.getAttribute("data-nemapi-md");
+      el.removeAttribute("data-nemapi-md");
+      el.removeAttribute("data-nemapi-md-req");
+      return md || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * KaTeX / MathJax render `$…$` as math: the source text disappears from the
+   * DOM text (fatal for shell commands like `"$c" --version` inside a tool
+   * call). Put the original TeX source back, with its `$` delimiters.
+   */
+  function restoreMath(root) {
+    if (!root || !root.querySelectorAll) return root;
+    const texOf = (el) => {
+      const a = el.querySelector('annotation[encoding="application/x-tex"], annotation[encoding*="tex" i]');
+      return a ? a.textContent : null;
+    };
+    const swap = (el, text) => {
+      const doc = el.ownerDocument || document;
+      if (el.parentNode) el.parentNode.replaceChild(doc.createTextNode(text), el);
+    };
+    try {
+      root.querySelectorAll(".katex-display").forEach((d) => {
+        const t = texOf(d);
+        if (t != null) swap(d, "$$" + t + "$$");
+      });
+      root.querySelectorAll(".katex").forEach((k) => {
+        const t = texOf(k);
+        if (t != null) swap(k, "$" + t + "$");
+      });
+      root.querySelectorAll("mjx-container").forEach((m) => {
+        const t = texOf(m);
+        if (t != null) swap(m, (m.getAttribute("display") === "true" ? "$$" : "$") + t + (m.getAttribute("display") === "true" ? "$$" : "$"));
+      });
+    } catch (_) {}
+    return root;
+  }
+
   function extractReactMarkdown(el, propNames) {
     if (!el) return "";
+    if (!getReactFiber(el)) {
+      // isolated world (normal case for an extension): go through the page bridge
+      const viaPage = readMarkdownViaPage(el, propNames);
+      if (viaPage && viaPage.trim()) noteExtractSource("react");
+      return viaPage ? viaPage.trim() : "";
+    }
     const names = propNames || [
       "markdown", "content", "text", "rawContent", "source",
       "message", "value", "answer", "response", "children",
@@ -463,24 +606,57 @@
    *   "1| def foo():"  or  "  12  const x = 1"
    */
   function stripLeadingLineNumbers(text) {
-    const lines = String(text || "").split("\n");
-    if (lines.length < 2) return String(text || "");
-    // Pattern A: "1| code" or "1: code" or "1 code" at start of many lines
+    const src = String(text || "");
+    const lines = src.split("\n");
+    if (lines.length < 3) return src;
+    // a tool call is never shown with a gutter — and its JSON must stay intact
+    if (/<tool[\s>:]|<function=|DSML/i.test(src)) return src;
+    const numRe = /^\s*(\d{1,5})(?:\s*[|：:.\)]\s|\s{2,}\S|\s*$)/;
+    const nonEmpty = lines.filter((l) => l.trim());
     let numbered = 0;
-    for (const line of lines) {
-      if (/^\s*\d+\s*[|：:.\)]\s/.test(line) || /^\s*\d{1,4}\s{2,}\S/.test(line)) numbered += 1;
+    let consecutive = 0;
+    let prev = null;
+    for (const line of nonEmpty) {
+      const m = line.match(numRe);
+      if (!m) continue;
+      numbered += 1;
+      const n = Number(m[1]);
+      if (prev !== null && n === prev + 1) consecutive += 1;
+      prev = n;
     }
-    if (numbered < Math.min(3, Math.ceil(lines.length * 0.4))) {
-      // Not a line-number gutter — leave as-is
-      return String(text || "");
+    // Real gutters number (almost) every line, consecutively.
+    if (numbered < 3 || numbered < nonEmpty.length * 0.8 || consecutive < (numbered - 1) * 0.8) {
+      return src;
     }
     return lines
       .map((line) =>
         line
           .replace(/^\s*\d+\s*[|：:.\)]\s?/, "")
-          .replace(/^\s*\d{1,4}\s{2,}/, "")
+          .replace(/^\s*\d{1,5}\s{2,}/, "")
       )
       .join("\n");
+  }
+
+  /** Code fence long enough for a body that itself contains ``` runs. */
+  function fenceFor(body) {
+    let longest = 0;
+    String(body || "").replace(/`{3,}/g, (m) => {
+      longest = Math.max(longest, m.length);
+      return m;
+    });
+    return "`".repeat(Math.max(3, longest + 1));
+  }
+
+  /**
+   * A markdown renderer turns bare "m.to" / "a.sh" into links; writing them
+   * back as [m.to](https://m.to/) would corrupt code. Keep only the label
+   * when the link is just the label itself.
+   */
+  function linkToMarkdown(label, href) {
+    if (!href) return label;
+    const bare = (x) => String(x || "").trim().replace(/^(?:https?:\/\/|mailto:)/i, "").replace(/\/+$/, "").toLowerCase();
+    if (!label || bare(label) === bare(href)) return label || href;
+    return "[" + label + "](" + href + ")";
   }
 
   /** Strip line numbers from every fenced code block in a markdown string. */
@@ -492,7 +668,9 @@
 
   function htmlToMarkdown(root) {
     if (!root) return "";
+    noteExtractSource("html");
     const clone = root.cloneNode(true);
+    restoreMath(clone);
     const kill = [
       "button",
       "[role='button']",
@@ -539,7 +717,8 @@
         let body = (code ? code.textContent : node.textContent) || "";
         body = body.replace(/\u00a0/g, " "); // nbsp → space
         body = stripLeadingLineNumbers(body);
-        return "\n\n```" + lang + "\n" + body.replace(/\n$/, "") + "\n```\n\n";
+        const fence = fenceFor(body);
+        return "\n\n" + fence + lang + "\n" + body.replace(/\n$/, "") + "\n" + fence + "\n\n";
       }
       if (tag === "code" && (!node.parentElement || node.parentElement.tagName.toLowerCase() !== "pre")) {
         return "`" + (node.textContent || "").replace(/`/g, "\\`") + "`";
@@ -557,7 +736,7 @@
       if (tag === "a") {
         const href = node.getAttribute("href") || "";
         const label = Array.from(node.childNodes).map(walk).join("") || href;
-        return href ? "[" + label + "](" + href + ")" : label;
+        return linkToMarkdown(label, href);
       }
       if (tag === "li") {
         return "\n- " + Array.from(node.childNodes).map(walk).join("").trim();
@@ -578,14 +757,17 @@
           return lineText.replace(/\r/g, "") + "\n";
         }
         // Whole code-block wrapper without a pre
-        if (/\b(code-block|codeblock|highlight|hljs|prism|cm-content|monaco)\b/i.test(cls)) {
+        // (a wrapper that holds a <pre> is walked normally: its header — language
+        // label, copy button — must not be glued to the code)
+        if (/(?:^|\s)(?:[\w]+-)*(code-block|codeblock|highlight|hljs|prism|cm-content|monaco)(?=\s|$)/i.test(cls) && !node.querySelector("pre")) {
           node.querySelectorAll(
             "[class*='line-number'],[class*='linenumber'],[class*='line-num'],.line-numbers,[data-line-number],button,svg"
           ).forEach((n) => n.remove());
           let body = node.textContent || "";
           body = stripLeadingLineNumbers(body);
           // If children already walked would double — use textContent once
-          return "\n\n```\n" + body.replace(/\n$/, "") + "\n```\n\n";
+          const fence = fenceFor(body);
+          return "\n\n" + fence + "\n" + body.replace(/\n$/, "") + "\n" + fence + "\n\n";
         }
         const inner = Array.from(node.childNodes).map(walk).join("");
         if (!inner || !inner.replace(/\s/g, "")) return "";
@@ -649,6 +831,16 @@
 
     // CSP blocks inline <script> injection on ChatGPT/Kimi/etc.
     // Only use chrome.scripting world:MAIN via the background service worker.
+    // Chrome < 111 cannot inject there: page_bridge.js (content script, MAIN)
+    // exposes the same hook on the page, which this world can only call by
+    // asking it through a DOM event.
+    try {
+      if (window.__nemapiInstallClipHook) {
+        window.__nemapiInstallClipHook();
+      } else {
+        document.dispatchEvent(new CustomEvent("nemapi:install-clip-hook"));
+      }
+    } catch (_) {}
     try {
       chrome.runtime.sendMessage({ action: "installPageClipHook" }).catch(() => {});
     } catch (_) {}
@@ -1230,6 +1422,16 @@
     getReactFiber,
     navigateFiberPath,
     extractReactMarkdown,
+    readMarkdownViaPage,
+    restoreMath,
+    noteExtractSource,
+    resetExtractSource,
+    looksIncomplete,
+    jobBudgetMs,
+    getExtractSource,
+    bridgeReady,
+    fenceFor,
+    linkToMarkdown,
     htmlToMarkdown,
     stripLeadingLineNumbers,
     cleanMarkdownCodeFences,

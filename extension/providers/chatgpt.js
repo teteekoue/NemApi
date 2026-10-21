@@ -127,7 +127,7 @@
         .replace(/&gt;/g, ">");
     }
     t = t
-      .replace(/ChatGPT\s*(said|says)?\s*[:：]?\s*/gi, "")
+      .replace(/^[ \t]*ChatGPT[ \t]*(said|says)?[ \t]*[:：]?[ \t]*$/gim, "")
       .replace(/^\s*Copy\s*(code)?\s*$/gim, "")
       .replace(/^\s*4o\s*mini\s*$/gim, "")
       .replace(/\n{3,}/g, "\n\n")
@@ -141,6 +141,7 @@
     const root = pickContentRoot(msgEl);
     // Prefer structured markdown conversion of the rendered DOM (never raw HTML)
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     clone
       .querySelectorAll(
         "button,[role='button'],svg,nav,[class*='action'],[class*='toolbar'],[data-testid*='copy']"

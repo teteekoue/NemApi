@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="NemApi">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="url(#g)" stroke-width="1.5" opacity="0.22"/>
+  <g stroke="url(#g)" stroke-width="2.8" stroke-linecap="round" opacity="0.85">
+    <line x1="64" y1="64" x2="64" y2="28"/>
+    <line x1="64" y1="64" x2="95" y2="40"/>
+    <line x1="64" y1="64" x2="106" y2="64"/>
+    <line x1="64" y1="64" x2="95" y2="88"/>
+    <line x1="64" y1="64" x2="64" y2="100"/>
+    <line x1="64" y1="64" x2="33" y2="88"/>
+    <line x1="64" y1="64" x2="22" y2="64"/>
+  </g>
+  <g>
+    <circle cx="64" cy="28" r="6" fill="#38bdf8"/>
+    <circle cx="95" cy="40" r="5.5" fill="#22d3ee"/>
+    <circle cx="106" cy="64" r="6" fill="#818cf8"/>
+    <circle cx="95" cy="88" r="5.5" fill="#fbbf24"/>
+    <circle cx="64" cy="100" r="6" fill="#f87171"/>
+    <circle cx="33" cy="88" r="5.5" fill="#a855f7"/>
+    <circle cx="22" cy="64" r="6" fill="#10a37f"/>
+  </g>
+  <circle cx="64" cy="64" r="14" fill="url(#g)"/>
+  <circle cx="64" cy="64" r="6" fill="#0b1220"/>
+  <circle cx="64" cy="64" r="2.5" fill="#e0f2fe"/>
+</svg>

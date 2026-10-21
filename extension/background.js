@@ -21,6 +21,52 @@ const PROVIDER_HOME = {
   zai: "https://chat.z.ai/",
 };
 
+// Chrome 111 is the first version with chrome.scripting world:"MAIN" and the
+// alarms API in an MV3 service worker; older Chromium (103…) are supported
+// through fallbacks below.
+const SCRIPTS_WORLD_MAIN = (() => {
+  try {
+    return !!(chrome.scripting && chrome.scripting.ExecutionWorld && chrome.scripting.ExecutionWorld.MAIN);
+  } catch (_) {
+    return false;
+  }
+})();
+const HAS_ALARMS = !!(chrome.alarms && chrome.alarms.create);
+const HAS_WEBNAV = !!(chrome.webNavigation && chrome.webNavigation.onCommitted);
+// setTimeout-driven fallback loop for the poll when chrome.alarms is missing
+let pollLoopStarted = false;
+let pollLoopTimer = null;
+let isWorker = false;
+try {
+  isWorker = typeof ServiceWorkerGlobalScope !== "undefined" && self instanceof ServiceWorkerGlobalScope;
+} catch (_) {}
+
+/** fetch() with a timeout that also works without AbortSignal.timeout (Chrome 103). */
+async function fetchWithTimeout(url, opts, ms) {
+  const options = Object.assign({}, opts || {});
+  let controller = null;
+  if (typeof AbortController === "function") {
+    controller = new AbortController();
+    options.signal = controller.signal;
+  }
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (controller) {
+        try {
+          controller.abort();
+        } catch (_) {}
+      }
+      reject(new Error("fetch timeout after " + ms + "ms"));
+    }, ms);
+  });
+  try {
+    return await Promise.race([fetch(url, options), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let pollTimer = null;
 let targetTabs = {};
 /** @type {Record<string, { jobId: string, startedAt: number, freshChat: boolean, tabId: number }>} */
@@ -87,11 +133,16 @@ async function reportTabs() {
   }
 }
 
+// proxy job timeout (GET /extension/config): long answers (big files written
+// by an agent) can take several minutes — the watchdog follows this value
+let jobTimeoutMs = 900000;
+
 async function pullConfig() {
   try {
     const response = await fetch(PROXY + "/extension/config", { cache: "no-store" });
     const config = await response.json();
     targetTabs = config.targetTabs || {};
+    if (Number(config.jobTimeoutMs) > 0) jobTimeoutMs = Number(config.jobTimeoutMs);
     autoConfigEnabled = config.autoConfig !== false;
     return true;
   } catch (_) {
@@ -105,6 +156,24 @@ function schedule(ms) {
 }
 
 async function injectScripts(tabId) {
+  // MAIN-world bridge first: after an extension reload, tabs that were already
+  // open do not receive the manifest content scripts (page_bridge.js
+  // included) — without it the answers are rebuilt from the rendered HTML,
+  // which loses backslashes, $ and quotes of the tool calls.
+  // Chrome < 111 has no executeScript world:"MAIN": page_bridge.js then comes
+  // only from the declarative content script (match_origin_as_fallback) and
+  // the re-injection is done again when the page commits (see webNavigation).
+  if (SCRIPTS_WORLD_MAIN) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "MAIN",
+        files: ["providers/page_bridge.js"],
+      });
+    } catch (error) {
+      await extensionLog(`Page bridge injection: ${error.message || error}`, "warn");
+    }
+  }
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -181,7 +250,7 @@ async function navigateToNewChat(provider, tabId) {
   }
 }
 
-async function postResult(jobId, action, value) {
+async function postResult(jobId, action, value, typed, meta) {
   try {
     await fetch(PROXY + "/job", {
       method: "POST",
@@ -191,6 +260,12 @@ async function postResult(jobId, action, value) {
         action,
         result: action === "result" ? value : "",
         error: action === "result" ? "" : value,
+        // incremental context: was the prompt submitted before the failure?
+        typed: typeof typed === "boolean" ? typed : null,
+        // diagnostics: how the answer was read (react = original markdown)
+        source: (meta && meta.source) || null,
+        bridge: meta && typeof meta.bridge === "boolean" ? meta.bridge : null,
+        partial: !!(meta && meta.partial),
       }),
     });
   } catch (error) {
@@ -215,18 +290,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const provider = msg.provider;
     if (provider) {
       releaseJobSlot(provider, msg.jobId);
-      postResult(msg.jobId, "result", msg.result);
+      postResult(msg.jobId, "result", msg.result, undefined, { source: msg.source, bridge: msg.bridge, partial: msg.partial });
       extensionLog(`Job ${msg.jobId} completed on ${provider}`);
     }
     sendResponse({ ok: true });
     return true;
   }
   if (msg.action === "automationError") {
-    const provider = msg.provider;
-    if (provider) {
-      releaseJobSlot(provider, msg.jobId);
-      postResult(msg.jobId, "error", msg.error);
-      extensionLog(`Job ${msg.jobId} failed on ${provider}: ${msg.error}`, "error");
+    // provider may be missing (page not recognised): find it from the job id
+    const provider = msg.provider
+      || Object.keys(activeJobs).find((p) => activeJobs[p] && activeJobs[p].jobId === msg.jobId);
+    if (provider) releaseJobSlot(provider, msg.jobId);
+    if (msg.jobId) {
+      postResult(msg.jobId, "error", msg.error, msg.typed);
+      extensionLog(`Job ${msg.jobId} failed on ${provider || "?"}: ${msg.error}`, "error");
     }
     sendResponse({ ok: true });
     return true;
@@ -264,6 +341,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  * is visible to the isolated content script via CustomEvent.
  */
 async function installPageClipHook(tabId) {
+  // Chrome < 111 cannot inject a function into the MAIN world: page_bridge.js
+  // installs the same hook from there (ensurePageClipboardHook → this function
+  // is skipped, the page world is not reachable anyway).
+  if (!SCRIPTS_WORLD_MAIN) return;
   await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
@@ -352,14 +433,14 @@ async function doPoll() {
     await pullConfig();
     await reportTabs();
     
-    // Watchdog: libère les jobs bloqués (le proxy timeout à 240s, donc tout
+    // Watchdog: libère les jobs bloqués (le proxy abandonne après jobTimeoutMs, donc tout
     // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).
     try {
       const now = Date.now();
       for (const [provider, job] of Object.entries(activeJobs)) {
-        if (now - job.startedAt > 230000) {
+        if (now - job.startedAt > jobTimeoutMs + 15000) {
           delete activeJobs[provider];
-          postResult(job.jobId, "error", "job abandoned locally (watchdog)");
+          postResult(job.jobId, "error", "job abandoned locally (watchdog)", true);
           extensionLog(`Watchdog: released stuck ${provider} job ${job.jobId}`, "warn");
         }
       }
@@ -367,10 +448,8 @@ async function doPoll() {
 
     // Check for pending jobs from proxy via /job endpoint
     try {
-      const response = await fetch(PROXY + "/job", {
-        cache: "no-store",
-        signal: AbortSignal.timeout(30000),   // MV3: ne jamais laisser un fetch pendu figer le poll
-      });
+      // MV3: ne jamais laisser un fetch pendu figer le poll
+      const response = await fetchWithTimeout(PROXY + "/job", { cache: "no-store" }, 30000);
       const jobData = await response.json();
       
       if (jobData && jobData.action === "ask") {
@@ -417,6 +496,7 @@ async function doPoll() {
             provider: provider,
             model: jobData.model,
             premiumMd: jobData.premiumMd !== false,
+            jobTimeoutMs: Number(jobData.jobTimeoutMs) || jobTimeoutMs,
           });
         } catch (e) {
           extensionLog(`Job start failed: ${e.message || e}`, "error");
@@ -439,19 +519,59 @@ chrome.action.onClicked.addListener(async () => {
   await chrome.tabs.create({ url: "http://127.0.0.1:8090/admin.html" });
 });
 
+/**
+ * Poll-loop fallback for browsers without chrome.alarms in the service worker
+ * (Chrome < 111: "alarms" is not available there, so the MV3 worker would be
+ * suspended after ~30s and never poll again). Re-arms itself through
+ * setTimeout; `isWorker` avoids a second loop in a document context.
+ */
+function ensurePollLoop() {
+  if (HAS_ALARMS || pollLoopStarted || !isWorker) return;
+  pollLoopStarted = true;
+  extensionLog("chrome.alarms indisponible → boucle de poll par setTimeout (mode compatible)");
+  const tick = () => {
+    pollInFlight = false; // décoince un fetch mort (navigateur revenu de veille)
+    doPoll();
+    pollLoopTimer = setTimeout(tick, 30000);
+  };
+  pollLoopTimer = setTimeout(tick, 30000);
+}
+
 // Start polling
 doPoll();
 
 // MV3 keep-alive: le service worker peut être suspendu après ~30s
 // d'inactivité, ce qui tue les setTimeout du poll. Une alarme périodique
 // réveille le SW et relance doPoll si la boucle s'est arrêtée.
-chrome.alarms.create("nemapi-poll", { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "nemapi-poll") {
-    pollInFlight = false;   // décoince un fetch mort (navigateur revenu de veille)
-    doPoll();
-  }
-});
+if (HAS_ALARMS) {
+  chrome.alarms.create("nemapi-poll", { periodInMinutes: 0.5 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === "nemapi-poll") {
+      pollInFlight = false;   // décoince un fetch mort (navigateur revenu de veille)
+      doPoll();
+    }
+  });
+}
+
+// page_bridge.js (MAIN world) cannot be re-injected with executeScript before
+// Chrome 111: the declarative content script covers the page load, and a
+// navigation of an AI tab (fresh chat, reload, extension reload) also
+// re-injects the isolated-world router, which asks the bridge for its state.
+if (HAS_WEBNAV) {
+  chrome.webNavigation.onCommitted.addListener((details) => {
+    if (details.frameId !== 0) return;
+    const provider = providerFromUrl(details.url);
+    if (!provider) return;
+    if (SCRIPTS_WORLD_MAIN) return; // main world injection already handled by injectScripts
+    injectScripts(details.tabId).catch(() => {});
+  });
+}
+
+// Everything else (alarms, webNavigation, executeScript) may be missing on
+// old Chromium builds: the extension must still load and work.
+try {
+  ensurePollLoop();
+} catch (_) {}
 
 // Clean up on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {

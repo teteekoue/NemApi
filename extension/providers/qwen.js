@@ -83,7 +83,7 @@
   function cleanResponse(text) {
     let t = String(text || "")
       .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .replace(/(JSON|Copy|Download|Think)\s*[:：]?\s*/gi, "")
+      .replace(/^[ \t]*(JSON|Copy|Download|Think)[ \t]*[:：]?[ \t]*$/gim, "")
       .trim();
     // Fix broken fences where language stuck to first token: ```\npythonimport → ```python\nimport
     t = t.replace(/```\s*\n?(python|javascript|js|ts|typescript|bash|sh|json|html|css|java|go|rust|sql|yaml|yml|cpp|c\+\+|csharp|php|ruby)(?=[a-zA-Z_])/gi, "```$1\n");
@@ -326,6 +326,7 @@
 
     // Build shell without code blocks, inject proper fences
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     // Mark matching pres in clone by order
     const cloneBlocks = clone.querySelectorAll(
       "pre, [class*='code-block'], [class*='codeblock'], [class*='highlight']"

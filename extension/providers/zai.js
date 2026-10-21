@@ -77,8 +77,8 @@
 
   function cleanResponse(text) {
     let t = String(text || "")
-      .replace(/GLM\s*[:：]?\s*/gi, "")
-      .replace(/Z\.?ai\s*[:：]?\s*/gi, "")
+      .replace(/^[ \t]*GLM[ \t]*[:：]?[ \t]*$/gim, "")
+      .replace(/^[ \t]*Z\.?ai[ \t]*[:：]?[ \t]*$/gim, "")
       .replace(/^\s*(Copy|复制|Share)\s*$/gim, "")
       .trim();
     if (B.cleanMarkdownCodeFences) t = B.cleanMarkdownCodeFences(t);
@@ -93,6 +93,7 @@
       if (react && react.length > 20) return cleanResponse(react);
     }
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     clone
       .querySelectorAll("button,[role='button'],svg,[class*='action'],[class*='toolbar']")
       .forEach((n) => n.remove());

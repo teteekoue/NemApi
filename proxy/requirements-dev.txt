@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8
+httpx>=0.27
+openai>=1.40
+# optional (browser tests, skipped when missing): playwright, markdown-it-py[linkify], mdit-py-plugins

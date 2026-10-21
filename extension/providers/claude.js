@@ -96,6 +96,7 @@
   function extractFromDom(root) {
     if (!root) return "";
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     clone
       .querySelectorAll(
         "button,[role='button'],[class*='copy'],[class*='toolbar'],[class*='action-bar'],svg,style,script"

@@ -179,6 +179,7 @@
 
     // Clone and strip action-bar / chrome so plain text is clean
     const clone = modelEl.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     try {
       clone
         .querySelectorAll(

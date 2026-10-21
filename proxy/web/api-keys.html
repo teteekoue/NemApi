@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Clés API</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="api-keys" data-title="Clés API">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Clés API</h1>
+          <div class="sub">Protège l'endpoint <code>/v1</code> par clé quand NemApi est joignable sur ton réseau local.</div>
+        </div>
+      </div>
+
+      <div class="grid g2 mb">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-protect">Protection</h3><p class="desc">Sans clé, toute machine du réseau peut utiliser ton endpoint.</p></div>
+            <span class="badge" id="api-protection-badge">—</span></div>
+          <div class="setting">
+            <div><div class="s-title">Exiger une clé API</div><div class="s-desc" id="api-protection-status">Chargement…</div></div>
+            <label class="switch lg"><input type="checkbox" id="api-protection"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-new">Nouvelle clé</h3><p class="desc">Donne-lui un nom pour la reconnaître (ex. « Qwen Code portable »).</p></div></div>
+          <form class="row" id="new-key-form" autocomplete="off">
+            <input type="text" id="new-key-name" class="input" placeholder="Nom de la clé (optionnel)" maxlength="60">
+            <button class="btn btn-primary" type="submit" id="new-key-btn">Créer</button>
+          </form>
+          <div id="new-key-result" style="margin-top:12px" hidden>
+            <div class="copy-box"><code id="new-key-value"></code><button class="btn btn-sm" type="button" id="new-key-copy">Copier</button></div>
+            <div class="small" style="color:var(--warn);margin-top:8px">Copie cette clé maintenant et range-la en lieu sûr.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb">
+        <div class="card-head"><div><h3 id="h-list">Clés existantes</h3><p class="desc">Clés acceptées par l'endpoint quand la protection est active.</p></div></div>
+        <div id="api-keys-list"><div class="skeleton" style="height:64px"></div></div>
+      </div>
+
+      <div class="callout">
+        <span id="use-ico"></span>
+        <div>Les clients envoient la clé dans l'en-tête <code>Authorization: Bearer &lt;clé&gt;</code> (ou <code>X-API-Key</code>).
+          Pour Qwen Code : <code>OPENAI_API_KEY=&lt;clé&gt;</code>.</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+$("h-protect").insertAdjacentHTML("afterbegin", icon("shield"));
+$("h-new").insertAdjacentHTML("afterbegin", icon("plus"));
+$("h-list").insertAdjacentHTML("afterbegin", icon("keys"));
+$("use-ico").outerHTML = icon("info", "");
+
+let keys = [];
+const mask = (k) => (k ? k.slice(0, 12) + "…" + k.slice(-4) : "—");
+
+async function load() {
+  const data = await api("/api-keys");
+  keys = data.api_keys || [];
+  const on = !!data.require_auth;
+  const sw = $("api-protection");
+  if (!sw.disabled) sw.checked = on;
+  const badge = $("api-protection-badge");
+  badge.className = "badge " + (on ? "ok" : "warn");
+  setText("api-protection-badge", on ? "Active" : "Désactivée");
+  setText("api-protection-status", on ? `${keys.length} clé(s) acceptée(s). Les requêtes sans clé valide sont refusées (401).`
+    : "Désactivée : l'endpoint est ouvert. Les clés existantes sont conservées.");
+  setHTML("api-keys-list", keys.length ? keys.map((k) => `<div class="key-item">
+      <div style="min-width:0"><div class="key-name">${k.name ? esc(k.name) : '<span class="faint">Sans nom</span>'}</div>
+        <div class="key-meta">ID ${esc(k.id)} · créée le ${esc(k.created_at)}</div>
+        <div class="key-value">${esc(mask(k.key))}</div></div>
+      <div class="row"><button class="btn btn-sm" type="button" data-copy="${esc(k.id)}">${icon("copy", "")}Copier</button>
+        <button class="btn btn-sm btn-danger" type="button" data-del="${esc(k.id)}">${icon("trash", "")}Supprimer</button></div></div>`).join("")
+    : `<div class="empty">Aucune clé${on ? "" : " active"}. Active la protection ou crée une clé.</div>`);
+}
+
+bindSwitch("api-protection", async (checked) => {
+  if (!checked && !(await confirmDialog("Désactiver la protection ?", "L'endpoint acceptera les requêtes sans clé. Les clés existantes sont conservées.", { ok: "Désactiver", danger: true }))) {
+    throw new Error("annulé");
+  }
+  const r = await post(checked ? "/api-keys/enable" : "/api-keys/disable");
+  if (r.api_key) showNewKey(r.api_key);
+  toast(checked ? "Protection activée" : "Protection désactivée", "ok");
+  await load();
+  NemUI.badges.now();
+});
+
+function showNewKey(key) {
+  $("new-key-value").textContent = key;
+  $("new-key-result").hidden = false;
+}
+
+$("new-key-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("new-key-btn");
+  btn.disabled = true;
+  try {
+    const r = await post("/api-keys", { name: $("new-key-name").value.trim() });
+    showNewKey(r.api_key);
+    $("new-key-name").value = "";
+    toast("Clé créée", "ok");
+    await load();
+  } catch (err) {
+    toast("Erreur : " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+$("new-key-copy").addEventListener("click", () => copyText($("new-key-value").textContent, "Clé copiée"));
+
+$("api-keys-list").addEventListener("click", async (e) => {
+  const c = e.target.closest("[data-copy]");
+  if (c) {
+    const k = keys.find((x) => x.id === c.dataset.copy);
+    return k ? copyText(k.key, "Clé copiée") : toast("Clé introuvable", "error");
+  }
+  const d = e.target.closest("[data-del]");
+  if (d) {
+    if (!(await confirmDialog("Supprimer cette clé ?", "Les clients qui l'utilisent seront refusés.", { ok: "Supprimer", danger: true }))) return;
+    try {
+      await api(`/api-keys/${encodeURIComponent(d.dataset.del)}`, { method: "DELETE" });
+      toast("Clé supprimée", "ok");
+      await load();
+    } catch (err) {
+      toast("Erreur : " + err.message, "error");
+    }
+  }
+});
+
+poll(load, 6000);
+</script>
+</body>
+</html>

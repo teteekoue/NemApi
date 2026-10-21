@@ -54,30 +54,6 @@
   const SEND_SVG_PATH_RE =
     /M8\.3125|M13\.12\s*19\.98|M12\s*5\.25|paper|send|arrow/i;
 
-  const UI_NOISE_RE = new RegExp(
-    [
-      "\\bCopy\\b",
-      "\\bCopied\\b",
-      "\\bDownload\\b",
-      "\\bJSON\\b",
-      "\\bThink\\b",
-      "\\bThinking\\b",
-      "\\bRegenerate\\b",
-      "\\bRetry\\b",
-      "\\bShare\\b",
-      "\\bContinue\\b",
-      "\\bStop\\b",
-      "\\bEdit\\b",
-      "\\bLike\\b",
-      "\\bDislike\\b",
-      "\\bReport\\b",
-      "复制",
-      "下载",
-      "重新生成",
-    ].join("|"),
-    "gi"
-  );
-
   function getMessageEls() {
     for (const s of MESSAGE) {
       const nodes = document.querySelectorAll(s);
@@ -88,7 +64,9 @@
 
   function domToMarkdown(root) {
     if (!root) return "";
+    if (B.noteExtractSource) B.noteExtractSource("dom");
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
 
     const killSelectors = [
       "button",
@@ -120,7 +98,8 @@
         if (m) lang = m[1];
       }
       const body = (code ? code.textContent : pre.textContent) || "";
-      const fence = "```" + lang + "\n" + body.replace(/\n$/, "") + "\n```";
+      const ticks = B.fenceFor ? B.fenceFor(body) : "```";
+      const fence = ticks + lang + "\n" + body.replace(/\n$/, "") + "\n" + ticks;
       const replacement = document.createTextNode("\n\n" + fence + "\n\n");
       pre.parentNode.replaceChild(replacement, pre);
     });
@@ -129,36 +108,56 @@
     return cleanResponse(text);
   }
 
-  function cleanResponse(text) {
+  // Spans passed through verbatim: fenced code blocks and tool-call blocks
+  // (their JSON carries file contents and shell commands).
+  const PROTECTED_RE = /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[`~]*[ \t]*(?=\n|$)|$)|<(tool_call|tool)[\s>:][\s\S]*?(?:<\/\3(?::[^>]*)?\s*>|$)|<[｜|]{1,2}\s*DSML[\s\S]*?(?:<\s*\/\s*[｜|]{1,2}\s*DSML\s*[｜|]{1,2}\s*(?:tool_calls|function_calls|calls)\s*>|$)/g;
+
+  function stripThink(text) {
     let t = String(text || "");
     t = t.replace(/<think>[\s\S]*?<\/think>/gi, "");
-    t = t.replace(/```think[\s\S]*?```/gi, "");
+    t = t.replace(/(^|\n)```think[\s\S]*?```/gi, "$1");
+    return t;
+  }
 
-    t = t
-      .split("\n")
-      .filter((line) => {
-        const s = line.trim();
-        if (!s) return true;
-        if (
-          /^(Copy|Copied|Download|JSON|Think|Thinking|Regenerate|Retry|Share|Stop|Edit|Like|Dislike|Report|复制|下载|重新生成)$/i.test(
-            s
-          )
-        ) {
-          return false;
-        }
-        if (/^(Copy|Download|JSON)\s*[:：.]?\s*$/i.test(s)) return false;
-        return true;
-      })
-      .join("\n");
-
-    t = t.replace(UI_NOISE_RE, (match, offset, full) => {
-      const before = full.slice(0, offset);
-      const opens = (before.match(/```/g) || []).length;
-      if (opens % 2 === 1) return match;
-      return "";
+  /**
+   * Remove UI chrome left by DOM extraction: only WHOLE lines that are a
+   * button label ("Copy", "Download"…), never inside code or tool calls.
+   * (An older inline pass removed every "json", "edit", "stop", "continue"…
+   * word — e.g. the JS keyword `continue;` or "package.json" in a write_file.)
+   */
+  function cleanResponse(text) {
+    const t0 = stripThink(text);
+    const parts = [];
+    let pos = 0;
+    t0.replace(PROTECTED_RE, (m, _lead, _f, _t, offset) => {
+      if (offset > pos) parts.push([false, t0.slice(pos, offset)]);
+      parts.push([true, m]);
+      pos = offset + m.length;
+      return m;
     });
-
-    t = t.replace(/[ \t]+\n/g, "\n");
+    if (pos < t0.length) parts.push([false, t0.slice(pos)]);
+    let t = parts
+      .map(([prot, seg]) => {
+        if (prot) return seg;
+        return seg
+          .split("\n")
+          .filter((line) => {
+            const s = line.trim();
+            if (!s) return true;
+            if (
+              /^(Copy|Copied|Download|JSON|Think|Thinking|Regenerate|Retry|Share|Stop|Edit|Like|Dislike|Report|复制|下载|重新生成)$/i.test(
+                s
+              )
+            ) {
+              return false;
+            }
+            if (/^(Copy|Download|JSON)\s*[:：.]?\s*$/i.test(s)) return false;
+            return true;
+          })
+          .join("\n")
+          .replace(/[ \t]+\n/g, "\n");
+      })
+      .join("");
     t = t.replace(/\n{3,}/g, "\n\n");
     return t.trim();
   }
@@ -218,7 +217,8 @@
       best = B.extractReactMarkdown(msgEl, ["markdown", "content", "text"]) || "";
     }
     if (best && best.length > 10) {
-      return cleanResponse(best);
+      // original markdown: no UI chrome to remove — only the thinking part
+      return stripThink(best).trim();
     }
 
     // 2) Structured HTML → MD (sync, preserves code fences)
@@ -249,6 +249,7 @@
           { domAssistantText: fromDom }
         );
         if (fromClip && fromClip.length > 10 && fromClip !== "[object Object]") {
+          if (B.noteExtractSource) B.noteExtractSource("clipboard");
           return cleanResponse(fromClip);
         }
       } catch (_) {}
@@ -506,6 +507,7 @@
     sendPrompt,
     waitForResponse,
     getLastResponse,
+    extractPremium, // final read of an answer (exported for tests)
     getResponseCount,
     isGenerating,
     findInput,

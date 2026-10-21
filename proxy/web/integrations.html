@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Intégration agents IA</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="integrations" data-title="Intégration agents IA">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Intégration agents IA</h1>
+          <div class="sub">Rends NemApi compatible avec le système de contexte de tes agents de code.
+            Tant qu'une intégration est désactivée, NemApi garde son <b>comportement classique</b> : chaque requête est tapée en entier dans le chat web.</div>
+        </div>
+      </div>
+
+      <div class="callout mb" id="how-it-works">
+        <span id="how-ico"></span>
+        <div>NemApi reconnaît l'agent à <b>chaque requête</b> (User-Agent, en-tête <code>X-NemApi-Agent</code> ou prompt système).
+          Une intégration activée ne s'applique qu'aux requêtes de son agent : les autres clients (Chat test, scripts, autres outils) restent en mode classique.</div>
+      </div>
+
+      <div id="agents" class="stack mb"><div class="card"><div class="skeleton" style="height:120px"></div></div></div>
+
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-clients">Clients récents</h3><p class="desc">Qui appelle NemApi et dans quel mode ses requêtes sont traitées.</p></div></div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Client</th><th>Mode</th><th style="text-align:right">Requêtes</th><th style="text-align:right">Dernière</th></tr></thead>
+            <tbody id="clients"><tr><td colspan="4" class="empty">Aucune requête depuis le démarrage du proxy.</td></tr></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-more">Autres agents</h3><p class="desc">La liste s'agrandira au fil des versions.</p></div></div>
+          <p class="muted" style="margin:0 0 10px">Chaque nouvel agent (Cline, Claude Code, Codex CLI, Aider…) aura sa propre intégration, <b>désactivée par défaut</b>.</p>
+          <p class="muted small" style="margin:0">En attendant, un agent non listé fonctionne en mode classique : active « Nouvelle discussion à chaque requête » dans
+            <a href="/config">Configuration</a> pour éviter que le contexte s'empile dans le chat web.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+$("how-ico").outerHTML = icon("info", "");
+$("h-clients").insertAdjacentHTML("afterbegin", icon("users"));
+$("h-more").insertAdjacentHTML("afterbegin", icon("plus"));
+
+const base = `${location.origin}/v1`;
+let structureKey = "";
+
+function initials(name) {
+  return name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+}
+
+function setupSnippet(agent) {
+  if (agent.id === "qwen-code") {
+    return `export OPENAI_BASE_URL="${base}"\nexport OPENAI_API_KEY="nemapi"      # ta clé NemApi si la protection est active\nexport OPENAI_MODEL="deepseek-chat"  # ou qwen-chat, claude-chat, gemini-chat…\nqwen`;
+  }
+  return `OPENAI_BASE_URL=${base}`;
+}
+
+function agentCard(a) {
+  const id = esc(a.id);
+  return `<section class="card agent-card" data-agent="${id}">
+    <div class="agent-top">
+      <div class="agent-logo">${esc(initials(a.name))}</div>
+      <div class="agent-meta">
+        <h2>${esc(a.name)} <span class="badge" id="int-${id}-badge">Désactivée</span></h2>
+        <div class="vendor">${esc(a.vendor)}${a.homepage ? ` · <a href="${esc(a.homepage)}" target="_blank" rel="noopener">${esc(a.homepage.replace(/^https?:\/\//, ""))}</a>` : ""}</div>
+        <p>${esc(a.description)}</p>
+      </div>
+      <div class="agent-toggle">
+        <label class="switch lg" title="Activer l'intégration ${esc(a.name)}"><input type="checkbox" id="int-${id}-enabled"><span class="slider"></span></label>
+        <span class="state" id="int-${id}-state">Désactivée</span>
+      </div>
+    </div>
+    <div class="agent-detect"><i class="dot" id="int-${id}-dot"></i><span id="int-${id}-detect">—</span></div>
+    <div class="agent-body">
+      <div class="section-title">Fonctions de l'intégration</div>
+      <div class="features" id="int-${id}-features">
+        ${a.features.map((f) => `<div class="setting" data-feature="${esc(f.id)}">
+          <div><div class="s-title">${esc(f.label)}</div><div class="s-desc">${esc(f.description)}</div>
+            ${f.id === "incremental_context" ? `<div class="session-box" id="int-sessions">—</div>` : ""}</div>
+          <div class="row" style="flex:0 0 auto">
+            ${f.id === "incremental_context" ? `<button class="btn btn-sm" id="int-reset" type="button" title="Oublier ce que contient la discussion : la prochaine requête renverra tout">${icon("refresh", "")}Réinitialiser</button>` : ""}
+            <label class="switch"><input type="checkbox" id="int-${id}-${esc(f.id)}"><span class="slider"></span></label>
+          </div></div>`).join("")}
+      </div>
+      <div class="section-title">Configurer ${esc(a.name)}</div>
+      <p class="muted small" style="margin:4px 0 10px">${esc(a.setup)}</p>
+      <div class="copy-box"><code id="int-${id}-snippet-line">${esc(base)}</code><button class="btn btn-sm" type="button" data-copy="${esc(base)}">Copier l'URL</button></div>
+      <pre class="session-box mono" style="white-space:pre-wrap;margin-top:10px" id="int-${id}-snippet">${esc(setupSnippet(a))}</pre>
+      <button class="btn btn-sm" type="button" data-copy-snippet="${id}">${icon("copy", "")}Copier la configuration</button>
+    </div>
+  </section>`;
+}
+
+function updateAgent(a, sessions) {
+  const id = a.id;
+  const en = $(`int-${id}-enabled`);
+  if (en && !en.disabled) en.checked = a.enabled;
+  const badge = $(`int-${id}-badge`);
+  if (badge) {
+    badge.className = "badge " + (a.enabled ? "ok" : "");
+    setText(`int-${id}-badge`, a.enabled ? "Active" : "Désactivée");
+  }
+  const st = $(`int-${id}-state`);
+  if (st) {
+    st.className = "state " + (a.enabled ? "on" : "");
+    setText(`int-${id}-state`, a.enabled ? "Activée" : "Mode classique");
+  }
+  for (const f of a.features) {
+    const box = $(`int-${id}-${f.id}`);
+    if (!box) continue;
+    if (!box.dataset.busy) box.checked = f.enabled;
+    box.disabled = !a.enabled || !!box.dataset.busy;
+    box.closest(".setting").classList.toggle("disabled", !a.enabled);
+  }
+  const d = a.detected || {};
+  const dot = $(`int-${id}-dot`);
+  if (dot) dot.className = "dot " + (d.seconds_ago != null && d.seconds_ago < 120 ? "on" : "");
+  setText(`int-${id}-detect`, d.requests
+    ? `${a.name} détecté ${fmtAgo(d.seconds_ago)} (via ${d.reason}) · ${fmtNum(d.requests)} requête(s)${a.enabled ? "" : " — traitées en mode classique tant que l'intégration est désactivée"}`
+    : `${a.name} pas encore détecté. Lance-le avec la base URL ci-dessous.`);
+  if (id === "qwen-code") {
+    const inc = a.features.find((f) => f.id === "incremental_context");
+    const reset = $("int-reset");
+    if (reset) reset.disabled = !(a.enabled && inc?.enabled);
+    const box = $("int-sessions");
+    if (box) {
+      if (!a.enabled || !inc?.enabled) {
+        setHTML(box, '<span class="faint">Inactif : chaque requête est tapée en entier.</span>');
+      } else {
+        const parts = Object.entries(sessions.sessions || {}).map(([p, x]) =>
+          `${esc(providerLabel(p))} : ${x.turns} tour(s), ${x.messages} msg${x.busy ? " · en cours" : ""}`);
+        const r = sessions.requests || {};
+        setHTML(box, `${parts.length ? "Sessions actives — " + parts.join(" · ") : "Aucune session active"}<br>`
+          + `Requêtes : ${r.full || 0} complète(s) · ${r.delta || 0} incrémentale(s) · ${r.cached || 0} sans renvoi · `
+          + `${r.local || 0} annexe(s) en local · ${r.side || 0} annexe(s) dans la discussion · `
+          + `caractères économisés : <b>${fmtChars(sessions.chars_saved || 0)}</b>`);
+      }
+    }
+  }
+}
+
+function renderClients(clients) {
+  setHTML("clients", clients.length ? clients.map((c) => `<tr>
+      <td><span class="mono small">${esc(c.name)}</span></td>
+      <td><span class="badge ${c.mode.startsWith("intégration") ? "ok" : c.agent ? "warn" : ""}">${esc(c.mode)}</span></td>
+      <td class="num">${fmtNum(c.requests)}</td><td class="num">${esc(fmtAgo(c.seconds_ago))}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="empty">Aucune requête depuis le démarrage du proxy.</td></tr>');
+}
+
+async function save(agentId, body, label) {
+  const a = await post(`/agent-integrations/${agentId}`, body);
+  toast(label(a), "ok", 2200);
+  refresher.now();
+  NemUI.badges.now();
+  return a;
+}
+
+$("agents").addEventListener("change", async (e) => {
+  const input = e.target.closest("input[type=checkbox]");
+  const card = e.target.closest("[data-agent]");
+  if (!input || !card) return;
+  const agentId = card.dataset.agent;
+  const feature = input.closest("[data-feature]")?.dataset.feature;
+  const checked = input.checked;
+  input.dataset.busy = "1";
+  input.disabled = true;
+  try {
+    if (feature) {
+      const label = input.closest(".setting").querySelector(".s-title").textContent;
+      await save(agentId, { features: { [feature]: checked } }, () => `${label} : ${checked ? "activé" : "désactivé"}`);
+    } else {
+      await save(agentId, { enabled: checked }, (a) => checked
+        ? `Intégration ${a.name} activée`
+        : `Intégration ${a.name} désactivée — retour au mode classique`);
+    }
+  } catch (err) {
+    input.checked = !checked;
+    toast("Erreur : " + err.message, "error");
+  } finally {
+    delete input.dataset.busy;
+    input.disabled = false;
+    refresher.now();
+  }
+});
+
+$("agents").addEventListener("click", async (e) => {
+  const copy = e.target.closest("[data-copy]");
+  if (copy) return copyText(copy.dataset.copy, "URL copiée");
+  const snip = e.target.closest("[data-copy-snippet]");
+  if (snip) return copyText($(`int-${snip.dataset.copySnippet}-snippet`).textContent, "Configuration copiée");
+  if (e.target.closest("#int-reset")) {
+    if (!(await confirmDialog("Réinitialiser le contexte ?", "NemApi oublie ce que contient la discussion : la prochaine requête renverra tout (ouvre toi-même un nouveau chat si besoin).", { ok: "Réinitialiser" }))) return;
+    try {
+      const r = await post("/sessions/reset");
+      toast(`${r.reset} session(s) réinitialisée(s)`, "ok");
+      refresher.now();
+    } catch (err) {
+      toast("Erreur : " + err.message, "error");
+    }
+  }
+});
+
+const refresher = poll(async () => {
+  const data = await api("/agent-integrations");
+  const key = data.agents.map((a) => a.id + ":" + a.features.map((f) => f.id).join(",")).join("|");
+  if (key !== structureKey) {
+    structureKey = key;
+    $("agents").innerHTML = data.agents.map(agentCard).join("");
+  }
+  for (const a of data.agents) updateAgent(a, data.sessions || {});
+  renderClients(data.clients || []);
+}, 2000);
+</script>
+</body>
+</html>

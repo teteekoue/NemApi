@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Analytics</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="analytics" data-title="Analytics">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Analytics</h1>
+          <div class="sub">Requêtes, tokens et coût équivalent aux tarifs API publics. Le pont local, lui, reste gratuit.</div>
+        </div>
+        <div class="page-actions"><button type="button" class="btn btn-danger" id="btn-clear-stats">Effacer l'historique</button></div>
+      </div>
+
+      <div class="grid g4 mb">
+        <div class="card stat"><div class="label">Requêtes <span id="i1"></span></div><div class="value" id="total-requests">—</div><div class="trend" id="persist-note">historique persisté</div></div>
+        <div class="card stat"><div class="label">Tokens <span id="i2"></span></div><div class="value" id="total-tokens">—</div>
+          <div class="token-split"><span class="token-chip">in <strong id="token-in">0</strong></span><span class="token-chip">out <strong id="token-out">0</strong></span></div></div>
+        <div class="card stat"><div class="label">Coût équivalent <span id="i3"></span></div><div class="value" id="total-cost">—</div><div class="trend">USD · tarifs API publics</div></div>
+        <div class="card stat"><div class="label">Uptime <span id="i4"></span></div><div class="value" id="uptime-display">—</div><div class="trend">proxy actif</div></div>
+      </div>
+
+      <div class="grid g2 mb">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-dist">Répartition des requêtes</h3><p class="desc">Part de chaque fournisseur.</p></div></div>
+          <div id="distribution-chart"><div class="skeleton" style="height:80px"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-detail">Détail par fournisseur</h3><p class="desc">Tokens d'entrée / sortie et coût équivalent.</p></div></div>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>Fournisseur</th><th style="text-align:right">Req.</th><th style="text-align:right">In</th><th style="text-align:right">Out</th><th style="text-align:right">Coût</th></tr></thead>
+            <tbody id="provider-stats"></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div><h3 id="h-price">Tarifs de référence (USD / 1K tokens)</h3><p class="desc">Prix publics utilisés pour l'estimation.</p></div></div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>Fournisseur</th><th>Modèle de référence</th><th style="text-align:right">Input / 1K</th><th style="text-align:right">Output / 1K</th></tr></thead>
+          <tbody id="pricing-body"></tbody></table></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+$("i1").outerHTML = icon("check", "");
+$("i2").outerHTML = icon("coins", "");
+$("i3").outerHTML = icon("analytics", "");
+$("i4").outerHTML = icon("clock", "");
+$("h-dist").insertAdjacentHTML("afterbegin", icon("analytics"));
+$("h-detail").insertAdjacentHTML("afterbegin", icon("tabs"));
+$("h-price").insertAdjacentHTML("afterbegin", icon("coins"));
+
+function render(stats) {
+  const pin = stats.prompt_tokens || 0, pout = stats.completion_tokens || 0;
+  setText("total-requests", fmtNum(stats.total_requests));
+  setText("total-tokens", fmtNum(pin + pout));
+  setText("token-in", fmtNum(pin));
+  setText("token-out", fmtNum(pout));
+  setText("total-cost", fmtCost(stats.estimated_cost));
+  setText("uptime-display", fmtUptime(stats.uptime_seconds));
+  if (stats.updated_at) setText("persist-note", "sauvé · " + String(stats.updated_at).replace("T", " ").slice(0, 19));
+
+  const providers = Object.entries(stats.providers || {});
+  const total = stats.total_requests || 0;
+  setHTML("distribution-chart", total ? providers.filter(([, d]) => d.requests > 0).sort((a, b) => b[1].requests - a[1].requests).map(([id, d]) => {
+    const pct = (d.requests / total) * 100;
+    return `<div class="bar-row"><div>${providerBadge(id)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%;background:${PCOLORS[id] || "var(--accent)"}"></div></div>
+      <div class="val">${pct.toFixed(0)}%</div></div>`;
+  }).join("") : '<div class="empty">Aucune requête pour le moment.</div>');
+
+  setHTML("provider-stats", providers.length ? providers.map(([id, d]) => `<tr><td>${providerBadge(id)}</td>
+      <td class="num">${fmtNum(d.requests)}</td><td class="num">${fmtNum(d.prompt_tokens)}</td>
+      <td class="num">${fmtNum(d.completion_tokens)}</td><td class="num">${fmtCost(d.cost)}</td></tr>`).join("")
+    : '<tr><td colspan="5" class="empty">—</td></tr>');
+
+  const pricing = stats.pricing || {};
+  setHTML("pricing-body", Object.keys(PCOLORS).map((id) => {
+    const p = pricing[id] || stats.providers?.[id]?.pricing || {};
+    return `<tr><td>${providerBadge(id)}</td><td class="muted">${esc(p.label || providerLabel(id))}</td>
+      <td class="num">${p.prompt_per_1k != null ? "$" + Number(p.prompt_per_1k).toFixed(5) : "—"}</td>
+      <td class="num">${p.completion_per_1k != null ? "$" + Number(p.completion_per_1k).toFixed(5) : "—"}</td></tr>`;
+  }).join(""));
+}
+
+const refresher = poll(async () => render(await api("/stats")), 3000);
+
+$("btn-clear-stats").addEventListener("click", async () => {
+  if (!(await confirmDialog("Effacer l'historique ?", "Requêtes, tokens et coûts seront remis à zéro.", { ok: "Effacer", danger: true }))) return;
+  try {
+    await post("/stats/clear");
+    toast("Historique effacé", "ok");
+    refresher.now();
+  } catch (e) {
+    toast("Erreur : " + e.message, "error");
+  }
+});
+</script>
+</body>
+</html>

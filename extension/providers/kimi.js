@@ -98,7 +98,7 @@
 
   function cleanResponse(text) {
     let t = String(text || "")
-      .replace(/Kimi\s*[:：]?\s*/gi, "")
+      .replace(/^[ \t]*Kimi[ \t]*[:：]?[ \t]*$/gim, "")
       .replace(/^\s*(Copy|复制|Share|分享)\s*$/gim, "")
       .trim();
     if (B.cleanMarkdownCodeFences) t = B.cleanMarkdownCodeFences(t);
@@ -113,6 +113,7 @@
       if (react && react.length > 20) return cleanResponse(react);
     }
     const clone = root.cloneNode(true);
+    if (B.restoreMath) B.restoreMath(clone);
     clone
       .querySelectorAll(
         "button,[role='button'],svg,[class*='action'],[class*='toolbar'],[class*='copy']"

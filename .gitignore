@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc.*
+.venv/
+venv/
+.pytest_cache/
+
+# Données locales du proxy (clés API, stats) — ne jamais versionner
+proxy/data/
+config.json
+stats.json
+debug_requests.json
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

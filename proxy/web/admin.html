@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Tableau de bord</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="dashboard" data-title="Tableau de bord">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Tableau de bord</h1>
+          <div class="sub">Vue d'ensemble du pont API local : extension, fournisseurs, mode de fonctionnement et activité.</div>
+        </div>
+      </div>
+
+      <div class="grid g4 mb">
+        <div class="card stat"><div class="label">Requêtes <span id="ico-req"></span></div><div class="value" id="st-requests">—</div><div class="trend">historique persisté</div></div>
+        <div class="card stat"><div class="label">Tokens <span id="ico-tok"></span></div><div class="value" id="st-tokens">—</div><div class="trend">prompt + complétion (estimés)</div></div>
+        <div class="card stat"><div class="label">Uptime <span id="ico-up"></span></div><div class="value" id="st-uptime">—</div><div class="trend">proxy actif</div></div>
+        <div class="card stat"><div class="label">Fournisseurs prêts <span id="ico-prov"></span></div><div class="value" id="st-ready">—</div><div class="trend" id="st-read">onglets sélectionnés</div></div>
+      </div>
+
+      <div class="grid g2 mb">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-endpoint">Endpoint API</h3><p class="desc">Base URL compatible OpenAI à donner à tes agents et outils.</p></div></div>
+          <div class="copy-box"><code id="endpoint-url">http://127.0.0.1:8090/v1</code><button class="btn btn-sm" type="button" id="copy-endpoint">Copier</button></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-mode">Mode de fonctionnement</h3><p class="desc">Classique par défaut ; les intégrations s'appliquent aux requêtes de leur agent.</p></div>
+            <a class="btn btn-sm" href="/integrations">Gérer</a></div>
+          <div class="mode-card"><div class="mode-ico" id="mode-ico"></div><div><div style="font-weight:750" id="mode-title">—</div><div class="small muted" id="mode-desc"></div></div></div>
+        </div>
+      </div>
+
+      <div class="grid g2">
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-prov">Fournisseurs</h3><p class="desc">Onglets navigateur reliés au proxy.</p></div><a class="btn btn-sm" href="/config">Configurer</a></div>
+          <div id="dash-providers" class="providers"><div class="skeleton" style="height:84px"></div><div class="skeleton" style="height:84px"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3 id="h-logs">Journal temps réel</h3><p class="desc">Jobs, erreurs et événements de l'extension.</p></div></div>
+          <div id="dash-logs" class="logs"><div class="empty" style="padding:8px 14px">Chargement…</div></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+$("ico-req").outerHTML = icon("check", "");
+$("ico-tok").outerHTML = icon("coins", "");
+$("ico-up").outerHTML = icon("clock", "");
+$("ico-prov").outerHTML = icon("users", "");
+$("h-endpoint").insertAdjacentHTML("afterbegin", icon("link"));
+$("h-mode").insertAdjacentHTML("afterbegin", icon("agents"));
+$("h-prov").insertAdjacentHTML("afterbegin", icon("tabs"));
+$("h-logs").insertAdjacentHTML("afterbegin", icon("log"));
+const endpoint = `${location.origin}/v1`;
+$("endpoint-url").textContent = endpoint;
+$("copy-endpoint").addEventListener("click", () => copyText(endpoint, "Endpoint copié"));
+
+let catalog = [];
+
+function renderLogs(logs) {
+  setHTML("dash-logs", (logs || []).slice().reverse().map((l) =>
+    `<div class="log"><span class="t">${esc(l.t)}</span><span class="msg log-${esc(l.level)}">${esc(l.msg)}</span></div>`
+  ).join("") || '<div class="empty" style="padding:8px 14px">Aucun événement pour le moment</div>');
+}
+
+function renderProviders(state) {
+  if (!catalog.length) return;
+  const byProvider = {};
+  for (const tab of state.tabs || []) (byProvider[tab.provider] ||= []).push(tab);
+  setHTML("dash-providers", catalog.map((p) => {
+    const selected = state.targetTabs?.[p.id];
+    const tab = (byProvider[p.id] || []).find((t) => t.id === selected);
+    const open = (byProvider[p.id] || []).length;
+    const badge = selected ? '<span class="badge ok">Prêt</span>' : open ? '<span class="badge warn">À choisir</span>' : '<span class="badge">Hors ligne</span>';
+    return `<div class="provider" style="--pcolor:${PCOLORS[p.id] || "var(--accent)"}">
+      <div class="head">${providerBadge(p.id)}${badge}</div>
+      <div class="purl" title="${esc(tab?.url || "")}">${selected ? esc(tab?.title || "Onglet sélectionné") : open ? `${open} onglet(s) ouvert(s)` : "Aucun onglet ouvert"}</div></div>`;
+  }).join(""));
+  setText("st-ready", `${catalog.filter((p) => state.targetTabs?.[p.id]).length}/${catalog.length}`);
+  const lx = state.lastExtraction;
+  setText("st-read", !lx ? "onglets sélectionnés" : lx.source === "react" ? "lecture : markdown d'origine ✓"
+    : lx.bridge === false ? "⚠ lecture du rendu HTML : recharge l'onglet (F5)" : `⚠ lecture : ${lx.source || "inconnue"} (rendu)`);
+}
+
+function renderMode(integ) {
+  const on = integ.agents.filter((a) => a.enabled);
+  setHTML("mode-ico", icon(on.length ? "agents" : "pulse", ""));
+  setText("mode-title", on.length ? `Intégration active : ${on.map((a) => a.name).join(", ")}` : "Mode classique");
+  setText("mode-desc", on.length
+    ? "Les requêtes de ces agents utilisent leurs fonctions dédiées ; les autres clients restent en mode classique."
+    : "Chaque requête est tapée en entier dans le chat web (comportement historique de NemApi).");
+}
+
+NemUI.onState((state) => {
+  renderProviders(state);
+  renderLogs(state.logs);
+});
+
+poll(async () => {
+  const [providers, stats, integ] = await Promise.all([api("/providers"), api("/stats"), api("/agent-integrations")]);
+  if (!catalog.length) {
+    catalog = providers.providers;
+    if (NemUI.state) renderProviders(NemUI.state);
+  }
+  setText("st-requests", fmtNum(stats.total_requests));
+  setText("st-tokens", fmtNum((stats.prompt_tokens || 0) + (stats.completion_tokens || 0)));
+  setText("st-uptime", fmtUptime(stats.uptime_seconds));
+  renderMode(integ);
+}, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NemApi · Chat test</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
+<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="icon" href="/icons/logo-32.png" type="image/png">
+</head>
+<body data-page="chat" data-title="Chat test">
+<div class="app">
+  <aside class="sidebar"></aside>
+  <div class="main">
+    <header class="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <div>
+          <h1>Chat test</h1>
+          <div class="sub">Envoie une vraie requête à travers le proxy pour vérifier un fournisseur (mode classique).</div>
+        </div>
+      </div>
+
+      <div class="card chat-wrap">
+        <div class="chat-toolbar">
+          <div class="field"><label for="chat-model">Modèle</label><select id="chat-model"></select></div>
+          <div class="field grow"><label for="chat-context">Instruction système (optionnel)</label><input type="text" id="chat-context" placeholder="Tu es un assistant concis…"></div>
+          <div class="field" id="api-key-field" hidden><label for="chat-api-key">Clé API</label><input type="password" id="chat-api-key" placeholder="nemapi-token…" autocomplete="off"></div>
+          <button class="btn" id="chat-clear" type="button">Effacer</button>
+        </div>
+        <div class="chat-body" id="chat-body"></div>
+        <div class="chat-input">
+          <textarea id="chat-input" class="input" rows="1" placeholder="Message… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)"></textarea>
+          <button class="btn btn-primary" id="chat-send" type="button">Envoyer</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/admin.js?v=5.0.0"></script>
+<script>
+"use strict";
+let chatHistory = [];
+let busy = false;
+let modelProvider = {};
+const EMPTY = `<div class="empty-chat">${icon("chat", "")}<div>Choisis un modèle et envoie un message de test.</div></div>`;
+$("chat-body").innerHTML = EMPTY;
+$("chat-send").insertAdjacentHTML("afterbegin", icon("send", ""));
+
+async function loadModels() {
+  try {
+    const { providers } = await api("/providers");
+    const opts = [];
+    for (const p of providers) {
+      for (const m of p.models || []) {
+        modelProvider[m] = p.id;
+        opts.push(`<option value="${esc(m)}">${esc(providerLabel(p.id))} · ${esc(m)}</option>`);
+      }
+    }
+    $("chat-model").innerHTML = opts.join("");
+    const saved = localStorage.getItem("nemapi-chat-model");
+    if (saved && modelProvider[saved]) $("chat-model").value = saved;
+  } catch (e) {
+    toast("Liste des modèles indisponible : " + e.message, "error");
+  }
+}
+$("chat-model").addEventListener("change", () => { try { localStorage.setItem("nemapi-chat-model", $("chat-model").value); } catch (_) {} });
+
+function addMsg(role, text) {
+  const body = $("chat-body");
+  body.querySelector(".empty-chat")?.remove();
+  const div = document.createElement("div");
+  div.className = "bubble " + role;
+  div.innerHTML = `<div class="who">${role === "user" ? "Vous" : "Assistant"}</div><div class="content"></div>`;
+  div.querySelector(".content").textContent = text;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+  return div;
+}
+
+async function streamChat(model, messages, onDelta) {
+  const headers = { "Content-Type": "application/json" };
+  const key = $("chat-api-key").value.trim();
+  if (key) headers.Authorization = "Bearer " + key;
+  const res = await fetch("/v1/chat/completions", {
+    method: "POST", headers,
+    body: JSON.stringify({ provider: modelProvider[model], model, messages, stream: true }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error?.message || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") return;
+      let json;
+      try { json = JSON.parse(data); } catch (_) { continue; }
+      if (json.error) throw new Error(json.error.message || "erreur du proxy");
+      const delta = json.choices?.[0]?.delta?.content;
+      if (delta) onDelta(delta);
+    }
+  }
+}
+
+async function send() {
+  if (busy) return;
+  const model = $("chat-model").value;
+  const text = $("chat-input").value.trim();
+  if (!text || !model) return;
+  const system = $("chat-context").value.trim();
+  $("chat-input").value = "";
+  addMsg("user", text);
+  const el = addMsg("assistant", "");
+  const content = el.querySelector(".content");
+  content.innerHTML = '<span class="cursor"></span>';
+  busy = true;
+  $("chat-send").disabled = true;
+  let full = "";
+  const messages = [...(system ? [{ role: "system", content: system }] : []), ...chatHistory, { role: "user", content: text }];
+  try {
+    await streamChat(model, messages, (d) => {
+      full += d;
+      content.textContent = full;
+      $("chat-body").scrollTop = $("chat-body").scrollHeight;
+    });
+    if (!full) content.textContent = "(réponse vide)";
+    chatHistory.push({ role: "user", content: text }, { role: "assistant", content: full });
+  } catch (e) {
+    el.classList.add("error");
+    el.querySelector(".who").textContent = "Erreur";
+    content.textContent = e.message;
+  } finally {
+    busy = false;
+    $("chat-send").disabled = false;
+    $("chat-input").focus();
+  }
+}
+
+$("chat-send").addEventListener("click", send);
+$("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("chat-clear").addEventListener("click", () => { chatHistory = []; $("chat-body").innerHTML = EMPTY; });
+
+loadModels();
+api("/api-keys/config").then((c) => { $("api-key-field").hidden = !c.require_auth; }).catch(() => {});
+</script>
+</body>
+</html>
