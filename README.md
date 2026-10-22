@@ -1,10 +1,14 @@
-# NemApi v5.3.0
+# NemApi v5.3.1
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+**Correctifs v5.3.1 :**
+- ✅ **La discussion web ne se rouvre plus à chaque requête** : la persistance devient le défaut pour **tous** les clients (le « Chat test » de l'interface comprise). Le mode classique ne rafraîchit plus l'URL ; seul le réglage explicite « Nouvelle discussion à chaque requête » peut le réactiver
+- ✅ **Première requête après l'ouverture d'un onglet** : l'extension rapportait ses onglets **après** avoir lu la configuration, si bien que le premier job partait avec une sélection d'onglet périmée (« No tab configured ») et n'aboutissait qu'au cycle suivant. L'ordre est inversé
 
 **Nouveautés v5.3.0 :**
 - ✅ **Un seul protocole pour tout le monde** : le corps de la requête est désormais **strictement OpenAI**. Les champs `fresh_chat` et `provider` ont disparu — un client qui les envoie est ignoré, pas obéi. L'agent se déclare par un **en-tête HTTP** (`X-NemApi-Agent`), que tout client sait envoyer
@@ -213,7 +217,7 @@ Jamais le client. C'est le proxy qui décide :
 
 | Situation | Nouvelle discussion ? |
 |---|---|
-| Mode classique (aucune intégration active) | selon le réglage **Configuration → Nouvelle discussion à chaque requête** |
+| Mode classique (aucune intégration active) | **jamais par défaut** — la discussion reste la même ; l'option **Configuration → Nouvelle discussion à chaque requête** peut la rouvrir |
 | Intégration active avec « Plus de nouvelle URL » / « Discussion unique » | **jamais** — la discussion reste la même |
 | Intégration active avec « Contexte incrémental » | **jamais** — et le contexte est géré dans la discussion |
 
@@ -289,7 +293,7 @@ Ou via `~/.qwen/settings.json` :
 
 ### Intégration agents IA (v5) 🆕
 
-Page **Intégration agents IA** (menu ☰ ou `http://127.0.0.1:8090/integrations`). Chaque agent de code a sa carte et son interrupteur, **désactivé par défaut**. Tant qu'une intégration est désactivée, NemApi se comporte comme le proxy classique v4.0 : réglage « Nouvelle discussion à chaque requête » de la page Configuration, tout le prompt tapé à chaque requête, requêtes annexes envoyées au navigateur, pas de suite automatique, pas de keep-alive.
+Page **Intégration agents IA** (menu ☰ ou `http://127.0.0.1:8090/integrations`). Chaque agent de code a sa carte et son interrupteur, **désactivé par défaut**. Tant qu'une intégration est désactivée, NemApi se comporte comme le proxy classique v4.0 — sauf sur un point : la discussion web reste **persistante** (l'URL n'est plus rouverte à chaque requête). Tout le prompt est tapé à chaque requête, les requêtes annexes sont envoyées au navigateur, pas de suite automatique, pas de keep-alive. Le réglage « Nouvelle discussion à chaque requête » de la page Configuration peut réactiver le rafraîchissement d'URL.
 
 **Qwen Code** — une fois activée, l'intégration s'applique **uniquement aux requêtes de Qwen Code** (les autres clients, la page Chat test, les scripts… restent en mode classique). Fonctions, toutes activées par défaut et réglables une à une :
 

@@ -65,9 +65,14 @@ Trois entrées typiques : `/v1/chat/completions` (le client),
    discussion**. Le résultat est recousu. C'est la garantie la plus
    importante du projet : un agent qui croit avoir écrit un fichier alors
    que le fichier est tronqué est pire qu'un échec franc.
-2. **Le mode classique est le comportement par défaut.** L'intégration agent
-   (contexte incrémental, fonctions agent) est **opt-in**, par fournisseur et
-   par agent. Désactivée, NemApi doit se comporter comme la v4.0.
+2. **La discussion web est persistante par défaut.** NemApi ne rouvre plus
+   l'URL du chat à chaque requête : `fresh_chat` est `False` par défaut, pour
+   tous les clients (le mode « Chat test » de l'interface comme les agents).
+   L'intégration agent (contexte incrémental, fonctions agent) reste
+   **opt-in**, par fournisseur et par agent : désactivée, NemApi retrouve le
+   comportement de la v4.0 *sauf* le rafraîchissement d'URL, qui n'a plus
+   lieu. Le réglage global « Fresh-chat » peut réactiver l'ancien
+   comportement s'il est explicitement activé.
 3. **Un seul job en vol par provider.** Le proxy sérialise par provider ;
    l'extension refuse un second job pour le même provider. Ne jamais
    contourner cette règle : deux onglets sur le même chat web s'entrelacent.
@@ -381,8 +386,10 @@ lierait chaque client à un dialecte NemApi et casserait le « un protocole
 pour tout le monde ».
 
 **Qui ouvre une nouvelle discussion ?** Jamais le client. Le proxy décide :
-le réglage global *sauf* si l'intégration a `persistent_chat` ou
-`incremental_context` (alors `job.fresh_chat = False`).
+`fresh_chat` vaut `False` par défaut (persistance de la discussion, pour tous
+les clients) ; une intégration qui n'a ni `persistent_chat` ni
+`incremental_context` laisse le réglage global décider, et le réglage global
+« Fresh-chat » peut forcer l'ouverture d'une nouvelle URL s'il est activé.
 
 **Qwen Code** — les trois points bloquants sont trois fonctions séparées,
 chacune activable seule :

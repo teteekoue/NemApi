@@ -15,7 +15,7 @@ from .logs import LogBuffer
 DEFAULT_SETTINGS: Dict[str, bool] = {
     "stream_enabled": True,
     "auto_config": True,
-    "fresh_chat": True,
+    "fresh_chat": False,
     "premium_md": True,
 }
 # v4.2–4.5 settings now owned by the agent integrations (services/integrations.py)

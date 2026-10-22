@@ -585,3 +585,44 @@ page Analytics : un tarif non vérifié est une faute.
   icône ne dépasse 40 px sur les six pages.
 
 Résultat : **268 tests passent, 0 échec, 0 ignoré**.
+
+## 13. v5.3.1 — La discussion persistante par défaut, la première requête qui n'attend plus (2026-10-22)
+
+### La discussion web ne se rouvre plus toute seule
+
+Le mode classique héritait du défaut v4.0 : `fresh_chat = True`, donc l'URL
+du chat était **rouverte à chaque requête**. Sur un chat ordinaire (la page
+« Chat test »), c'était un contresens : l'interface web garde déjà la
+discussion, la rouvrir jette le contexte et refait tout le rendu de page.
+
+La persistance devient le **défaut** (`DEFAULT_SETTINGS["fresh_chat"]` passe à
+`False`) pour **tous** les clients, agents compris. Le corps de la requête ne
+change pas — `fresh_chat` reste ignoré s'il est envoyé ; c'est bien le proxy
+qui décide. Le réglage global « Nouvelle discussion à chaque requête » reste
+disponible et **force** l'ancien comportement s'il est activé.
+
+L'invariant 2 de `AGENTS.md` est réécrit en conséquence : « le mode classique
+est le comportement par défaut » devient « la discussion web est persistante
+par défaut », le rafraîchissement d'URL n'ayant plus lieu en mode classique.
+
+### La première requête après l'ouverture d'un onglet échouait
+
+Symptôme dans le journal : `Auto-configured deepseek tab: 86` puis, onze
+secondes plus tard, `Job … error: No tab configured for deepseek` — suivi, au
+cycle suivant, d'un job qui partait bien sur le même onglet.
+
+Cause : la boucle de l'extension faisait, à chaque cycle,
+
+1. `pullConfig()` — lire `targetTabs` depuis le proxy ;
+2. `reportTabs()` — envoyer ses onglets, ce qui peut **faire auto-configurer**
+   un nouvel onglet **côté proxy** ;
+3. `GET /job` — recevoir le job.
+
+L'auto-configuration déclenchée par (2) n'était donc pas encore connue de
+l'extension en (3) : `targetTabs[provider]` était vide, le job était rejeté
+(`No tab configured`) et il fallait attendre le cycle suivant — une requête
+perdue, puis une relance. L'ordre est inversé : `reportTabs()` **puis**
+`pullConfig()`. L'onglet fraîchement auto-configuré est connu avant la
+récupération du job, la première requête aboutit du premier coup.
+
+Résultat : **268 tests passent, 0 échec, 0 ignoré**.

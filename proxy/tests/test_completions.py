@@ -71,7 +71,8 @@ async def test_non_stream_completion(server):
         job = ext.received[0]
         assert job["provider"] == "qwen" and job["model"] == "qwen-chat"
         assert "Sois bref" in job["question"] and "User: Bonjour" in job["question"]
-        assert job["freshChat"] is True and job["premiumMd"] is True
+        # persistent discussion is the default: the proxy never reopens the URL
+        assert job["freshChat"] is False and job["premiumMd"] is True
     st = server.ctx.stats.report(server.ctx.started_at, "t")
     assert st["total_requests"] == 1 and st["providers"]["qwen"]["requests"] == 1
 
@@ -265,14 +266,15 @@ async def test_the_body_cannot_decide_the_discussion(server):
     sends the field anyway is ignored, not obeyed."""
     async with FakeExtension(server.url) as ext:
         async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
-            await c.post("/v1/chat/completions", json={"model": "qwen", "messages": MSG, "fresh_chat": False})
-            await c.post("/settings", json={"fresh_chat": False})
+            await c.post("/v1/chat/completions", json={"model": "qwen", "messages": MSG, "fresh_chat": True})
+            await c.post("/settings", json={"fresh_chat": True})
             await c.post("/v1/chat/completions", json={"model": "qwen", "messages": [{"role": "user", "content": "2"}]})
-            await c.post("/v1/chat/completions", json={"model": "qwen", "messages": [{"role": "user", "content": "3"}], "fresh_chat": True})
-        # the first request: the global setting (fresh chat on) applies
-        # the second and third: the global setting is off, and the field the
-        # client sent is ignored
-        assert [j["freshChat"] for j in ext.received] == [True, False, False]
+            await c.post("/v1/chat/completions", json={"model": "qwen", "messages": [{"role": "user", "content": "3"}], "fresh_chat": False})
+        # the first request: the global default (persistent discussion) applies,
+        # the client's "fresh_chat": true is ignored
+        # the second and third: the global setting is on, and the field the
+        # client sent is ignored in both directions
+        assert [j["freshChat"] for j in ext.received] == [False, True, True]
 
 
 async def test_the_request_body_is_strictly_openai(server):

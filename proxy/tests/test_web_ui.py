@@ -141,9 +141,10 @@ async def test_qwen_code_integration_page(server, browser_page, tmp_path):
         await _wait_for(lambda: _text_has(page.locator("#int-sessions"), "Inactif"))
 
         # classic mode: the agent is detected but its requests stay classic
+        # (the discussion still persists by default — only the integration is off)
         agent = VirtualCodingAgent(server.url)
         assert (await agent.ask(TASK_1)).startswith("TASK-1 DONE")
-        assert all(j["freshChat"] is True for j in ext.jobs)
+        assert all(j["freshChat"] is False for j in ext.jobs)
         await _wait_for(lambda: _text_has(page.locator("#int-qwen-code-detect"), "mode classique"))
         await _wait_for(lambda: _text_has(page.locator("#clients"), "Qwen Code · intégration désactivée"))
 
@@ -215,7 +216,8 @@ async def test_chat_analytics_and_api_keys_pages(server, browser_page):
         await page.fill("#chat-input", "Bonjour")
         await page.keyboard.press("Enter")
         await _wait_for(lambda: _text_has(page.locator(".bubble.assistant"), "ERROR_NO_TOOLS_IN_CONTEXT"))
-        assert ext.jobs[-1]["freshChat"] is True and ext.jobs[-1]["provider"] == "qwen"
+        # the chat never reopens the discussion: persistent chat is the default
+        assert ext.jobs[-1]["freshChat"] is False and ext.jobs[-1]["provider"] == "qwen"
         await page.click("#chat-clear")
         assert await page.locator(".bubble").count() == 0
 

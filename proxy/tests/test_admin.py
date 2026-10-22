@@ -113,18 +113,18 @@ def test_settings_persist_across_restart(server_factory, tmp_path):
     data = tmp_path / "persist"
     srv = server_factory(data_dir=data)
     with httpx.Client(base_url=srv.url) as c:
-        assert c.get("/settings").json()["fresh_chat"] is True
-        r = c.post("/settings", json={"fresh_chat": False, "stream_enabled": False, "auto_config": False})
-        assert r.json() == {"stream_enabled": False, "auto_config": False, "fresh_chat": False, "premium_md": True}
+        assert c.get("/settings").json()["fresh_chat"] is False
+        r = c.post("/settings", json={"fresh_chat": True, "stream_enabled": False, "auto_config": False})
+        assert r.json() == {"stream_enabled": False, "auto_config": False, "fresh_chat": True, "premium_md": True}
         # empty body is accepted (no-op)
         assert c.post("/settings").status_code == 200
     srv.stop()
     saved = json.loads((data / "config.json").read_text())
-    assert saved["settings"]["fresh_chat"] is False
+    assert saved["settings"]["fresh_chat"] is True
     srv2 = server_factory(data_dir=data)
     with httpx.Client(base_url=srv2.url) as c:
         assert c.get("/settings").json() == {
-            "stream_enabled": False, "auto_config": False, "fresh_chat": False, "premium_md": True,
+            "stream_enabled": False, "auto_config": False, "fresh_chat": True, "premium_md": True,
         }
 
 

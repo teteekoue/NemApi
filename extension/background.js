@@ -436,8 +436,14 @@ async function doPoll() {
   pollInFlight = true;
   let polledJob = false;
   try {
-    await pullConfig();
+    // Report our tabs FIRST: the proxy may auto-configure a target tab from
+    // this report. Pulling the config afterwards makes sure that freshly
+    // auto-configured tab is known here before we fetch a job in the same
+    // cycle — otherwise the job is rejected with "No tab configured" and
+    // retried a full cycle later (the first request after opening a tab
+    // always failed).
     await reportTabs();
+    await pullConfig();
     
     // Watchdog: libère les jobs bloqués (le proxy abandonne après jobTimeoutMs, donc tout
     // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).

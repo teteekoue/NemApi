@@ -209,7 +209,9 @@ async def test_disabled_by_default_keeps_legacy_behaviour(server):
     async with WebUIExtension(server.url) as ext:
         agent = VirtualCodingAgent(server.url)
         await agent.ask(TASK_1)
-    assert all(j["freshChat"] is True for j in ext.jobs)
+    # persistent discussion is now the default for every client: the integration
+    # being off does not bring back the "new URL on every request" behaviour
+    assert all(j["freshChat"] is False for j in ext.jobs)
     assert all(SYSTEM_PROMPT in j["question"] for j in ext.jobs)
 
 
