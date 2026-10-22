@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Configuration</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="stylesheet" href="/admin.css?v=5.2.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="config" data-title="Configuration">
@@ -52,8 +52,9 @@
           </div>
           <div class="callout" style="margin-top:14px" id="cfg-agents-hint">
             <span id="hint-ico"></span>
-            <div>Tu utilises un agent de code (Qwen Code…) ? Active son intégration dans
-              <a href="/integrations">Intégration agents IA</a> : contexte incrémental, requêtes annexes, suite des réponses coupées…</div>
+            <div>Tu utilises un agent de code (Qwen Code, Nemesis…) ? Active son intégration dans
+              <a href="/integrations">Intégration agents IA</a> : une seule discussion web, un contexte géré, des
+              appels d'outils natifs. Ces intégrations ignorent « Nouvelle discussion à chaque requête ».</div>
           </div>
         </div>
         <div class="card">
@@ -65,7 +66,7 @@
   </div>
 </div>
 
-<script src="/admin.js?v=5.0.0"></script>
+<script src="/admin.js?v=5.2.0"></script>
 <script>
 "use strict";
 $("h-tabs").insertAdjacentHTML("afterbegin", icon("tabs"));

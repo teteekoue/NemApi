@@ -9,8 +9,13 @@
   const B = global.NemApiBase;
 
   const INPUT = [
+    // Live DOM (ops120/kimi-brain, references/site-map.md, relevé 2026-09-12):
+    //   div.chat-input-editor[data-lexical-editor="true"][role="textbox"]
+    // The most specific selector first, the generic ones last (writing into
+    // the wrong surface is silent — the text goes nowhere and the send
+    // button stays disabled).
+    'div.chat-input-editor[data-lexical-editor="true"][role="textbox"]',
     '.chat-input-editor[contenteditable="true"]',
-    '.chat-input-editor[data-lexical-editor="true"]',
     '[contenteditable="true"][data-lexical-editor="true"][role="textbox"]',
     '[contenteditable="true"][data-lexical-editor="true"]',
     ".chat-input-editor",
@@ -31,6 +36,31 @@
     "button.send-button",
   ];
 
+  // Image upload: the file input is PERSISTENT in the DOM — live DOM capture
+  // (tamga 2026-10-18): `<input class="hidden-input" type="file" multiple>`,
+  // sitting in `div.chat-editor-action`, next to the tools button that opens
+  // the upload menu (`.toolkit-trigger-btn`, data-testid="toolkit-trigger-btn").
+  // The button is only a fallback: the input is already there.
+  const FILE_INPUT = [
+    ".chat-editor-action input.hidden-input[type='file']",
+    "input.hidden-input[type='file']",
+    "input[type='file'][multiple]:not([capture])",
+    "input[type='file']:not([capture])",
+  ];
+  const ATTACH = [
+    ".toolkit-trigger-btn",
+    "[data-testid='toolkit-trigger-btn']",
+  ];
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: FILE_INPUT,
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      name: "Kimi",
+    });
+  }
+
   const MESSAGE = [
     ".chat-content-item-assistant",
     "[class*='chat-content-item-assistant']",
@@ -40,25 +70,40 @@
     "[class*='assistant'] .markdown",
   ];
 
+  function log(msg) {
+    try {
+      console.log("[NemApi/kimi] " + msg);
+    } catch (_) {}
+  }
+
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot ? B.findComposerRoot() : document;
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot ? B.findComposerRoot(input) : document;
     for (const s of SEND) {
       try {
         const nodes = root.querySelectorAll(s);
         for (const el of nodes) {
           if (!el || !B.isVisible(el)) continue;
-          if (B.isDisabled && B.isDisabled(el)) continue;
-          if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+          // the DISABLED state is NOT filtered here: the caller is the one
+          // waiting for the button to become usable, and filtering it means
+          // never finding it at all.
           const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.className || ""}`.toLowerCase();
           if (/stop|cancel|attach|upload|file|mic|voice|toolkit/.test(label)) continue;
           // Prefer actual button inside container
           if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") {
             const inner = el.querySelector("button, [role='button']");
-            if (inner && B.isVisible(inner) && !(B.isDisabled && B.isDisabled(inner))) return inner;
+            if (inner && B.isVisible(inner)) return inner;
           }
           return el;
         }
@@ -91,9 +136,31 @@
     return out;
   }
 
+  /**
+   * The answer block, without the reasoning.
+   *
+   * Live DOM (ops120/kimi-brain, site-map.md): a Kimi answer holds TWO
+   * `.markdown-container` blocks — the first one is the "thinking"
+   * (思考 / `toolcall-content-text`) and must be EXCLUDED, the second one is
+   * the answer itself.
+   */
   function pickContentRoot(msgEl) {
     if (!msgEl) return null;
-    return msgEl.querySelector(".markdown, [class*='markdown'], .paragraph") || msgEl;
+    const blocks = Array.from(
+      msgEl.querySelectorAll(
+        ".markdown-container, .markdown, [class*='markdown'], .paragraph"
+      )
+    ).filter(
+      (el) =>
+        !el.closest(
+          "[class*='toolcall-content'], [class*='thinking'], [class*='reason'], [class*='thought']"
+        )
+    );
+    if (blocks.length) {
+      // the answer is the LAST markdown block (the first one is the thinking)
+      return blocks[blocks.length - 1];
+    }
+    return msgEl;
   }
 
   function cleanResponse(text) {
@@ -183,116 +250,48 @@
     return "";
   }
 
-  function isGenerating() {
-    return !!(
-      document.querySelector('button[aria-label*="Stop" i]') ||
-      document.querySelector('button[aria-label*="停止"]') ||
-      document.querySelector('[class*="stop-generating"], [class*="streaming"], [class*="loading-dots"]')
-    );
-  }
-
   /**
-   * Lexical/React contenteditable rejects many paste paths.
-   * document.execCommand('insertText') is the reliable atomic write.
+   * Is the model still streaming?
+   *
+   * Strict and local on purpose: a false positive is not free (the proxy
+   * only accepts a stable answer once the provider is idle). The page-wide
+   * `[class*="streaming"]` / `[class*="loading-dots"]` matches hit unrelated
+   * elements and kept the page "busy" for good.
    */
-  function fillLexicalEditor(el, text) {
-    try {
-      el.focus();
-    } catch (_) {}
-    try {
-      const sel = window.getSelection();
-      if (sel) {
-        sel.selectAllChildren(el);
-      }
-    } catch (_) {}
-    try {
-      if (document.execCommand) {
-        document.execCommand("selectAll", false, null);
-        document.execCommand("insertText", false, text);
-        return true;
-      }
-    } catch (_) {}
-    // Fallback to shared paste helper
-    try {
-      B.pasteText(el, text);
-      return true;
-    } catch (_) {}
+  function isGenerating() {
+    const stop =
+      document.querySelector('button[aria-label*="Stop" i]') ||
+      document.querySelector('button[aria-label*="停止"]');
+    if (stop && B.isVisible(stop)) return true;
+    // a streaming indicator INSIDE the last answer or the composer
+    const els = getMessageEls();
+    const scope = els.length ? els[els.length - 1] : findInput();
+    if (scope && scope.querySelector) {
+      const busy = scope.querySelector(
+        '[class*="stop-generating"], [class*="streaming"], [class*="loading-dots"]'
+      );
+      if (busy && B.isVisible(busy)) return true;
+    }
     return false;
   }
 
-  function inputHasText(el, expected) {
-    if (!el) return false;
-    const sample = String(expected || "").slice(0, 40);
-    if ("value" in el && el.tagName === "TEXTAREA") {
-      const v = el.value || "";
-      return sample ? v.includes(sample) : v.length > 0;
-    }
-    const t = el.innerText || el.textContent || "";
-    return sample ? t.includes(sample) : t.trim().length > 0;
-  }
-
   async function sendPrompt(text) {
-    const payload = String(text ?? "");
-    let input = findInput();
-    if (!input) {
-      try {
-        input = await B.waitFor(
-          '.chat-input-editor, [data-lexical-editor="true"], [contenteditable="true"]',
-          15000
-        );
-      } catch (_) {
-        throw new Error("Kimi: input not found");
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+      // Kimi's send control is a `<div>` (not a `<button>`): it has no
+      // `disabled` attribute, the state is carried by a `disabled` CLASS.
+      sendDisabledCheck: (btn) =>
+        !!(btn && btn.classList && btn.classList.contains("disabled")),
+    });
+    if (!res) {
+      throw new Error(
+        "Kimi: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-
-    for (let i = 0; i < 20; i++) {
-      if (B.isVisible(input) && input.getAttribute("contenteditable") !== "false") break;
-      await B.sleep(150);
-      input = findInput() || input;
-    }
-
-    let pasted = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      input = findInput() || input;
-      fillLexicalEditor(input, payload);
-      await B.sleep(400);
-      if (inputHasText(input, payload)) {
-        pasted = true;
-        break;
-      }
-      await B.sleep(200);
-    }
-    if (!pasted) {
-      try {
-        B.pasteText(input, payload);
-      } catch (_) {}
-      await B.sleep(300);
-    }
-
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 4000)
-      : null;
-    if (!btn) {
-      for (let i = 0; i < 25; i++) {
-        btn = findSend();
-        if (btn && !(B.isDisabled && B.isDisabled(btn))) break;
-        await B.sleep(120);
-        btn = null;
-      }
-    }
-    if (btn) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) {
-        await B.sleep(250);
-        return;
-      }
-    }
-    // Enter submits on Kimi
-    B.pressEnter(input);
-    await B.sleep(120);
-    B.pressEnter(input);
+    await B.clickSend({ input: res.input, btn: res.btn, findSend, text, log: (m) => log(m) });
   }
 
   async function waitForResponse(previous = "", prevCount = 0) {
@@ -339,6 +338,7 @@
     id: "kimi",
     match: (url) => /kimi\.com|kimi\.ai|moonshot\.cn/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

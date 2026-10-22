@@ -11,6 +11,8 @@ import pytest
 
 from conftest import FakeExtension
 
+from nemapi import __version__
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from virtual_agent import QWEN_CODE_UA, configure  # noqa: E402
 
@@ -41,9 +43,13 @@ async def test_defaults_off_and_shape(server):
         assert {f["id"] for f in q["features"]} == FEATURES
         assert all(f["enabled"] is True and f["default"] is True for f in q["features"])  # ready once switched on
         assert snap["sessions"]["enabled"] is False
-        assert (await c.get("/status")).json()["integrations"] == {"qwen-code": False}
+        # every agent is listed, and every one of them is off by default
+        assert (await c.get("/status")).json()["integrations"] == {
+            a["id"]: False for a in snap["agents"]
+        }
+        assert {a["id"] for a in snap["agents"]} == {"qwen-code", "nemesis"}
         health = (await c.get("/health")).json()
-        assert health["app_version"] == "5.0.0"
+        assert health["app_version"] == __version__
         settings = (await c.post("/settings", json={})).json()
         assert set(settings) == {"stream_enabled", "auto_config", "fresh_chat", "premium_md"}
 

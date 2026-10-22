@@ -7,16 +7,26 @@
   const B = global.NemApiBase;
 
   const INPUT = [
-    "div.ql-editor.textarea",
+    // Live DOM (Vineetpandey0/Context-Sync, injectors/gemini.js):
+    //   <rich-textarea class="ql-container ql-bubble">
+    //     <div class="ql-editor ql-blank textarea new-input-ui"
+    //          contenteditable="true" role="textbox"
+    //          aria-label="Enter a prompt for Gemini">
+    // The editable root is the `.ql-editor`; the container is the
+    // `rich-textarea` itself (it carries the `ql-container` class).
+    // ⚠️ `.ql-clipboard` is ALSO contenteditable — it must never be written.
+    "rich-textarea div.ql-editor[contenteditable='true']",
     "div.ql-editor[contenteditable='true']",
+    "div.ql-editor.textarea",
     "div.ql-editor",
-    ".ql-container",
-    'rich-textarea [contenteditable="true"]',
-    '[contenteditable="true"][role="textbox"]',
-    '[aria-label*="prompt" i][contenteditable="true"]',
+    'rich-textarea div.ql-editor',
+    '[contenteditable="true"][role="textbox"]:not(.ql-clipboard)',
+    '[aria-label*="prompt" i][contenteditable="true"]:not(.ql-clipboard)',
   ];
 
   const SEND = [
+    // the send control enables itself when the prompt is really there
+    'button[aria-label="Send message"]',
     'button[aria-label*="Send message" i]',
     'button[aria-label*="Send" i]',
     'button[aria-label*="送信"]',
@@ -33,18 +43,58 @@
     ".markdown.markdown-main-panel",
   ];
 
+  // Image upload (lumingya/universal-web-api, config/sites/gemini.google.com
+  // ; LangQueue, src/content/adapters/gemini.ts):
+  //   button[aria-label="Upload & tools"][aria-haspopup="menu"]
+  //   images-files-uploader > input.hidden-file-input[type="file"]
+  // The input lives INSIDE the opened menu: it is mounted only once the menu
+  // is open, which is why the attach button is clicked first.
+  const FILE_INPUT = [
+    "images-files-uploader input.hidden-file-input[type='file']",
+    "input.hidden-file-input[type='file']",
+    "input[type='file'][accept='image/*']:not([capture])",
+    "input[type='file']:not([capture])",
+  ];
+  const ATTACH = ['button[aria-label="Upload & tools"]', 'button[aria-label="Open upload file menu"]'];
+  const DROP_TARGET = ["rich-textarea", ".input-area"];
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: FILE_INPUT,
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      dropTarget: DROP_TARGET,
+      name: "Gemini",
+    });
+  }
+
+  function log(msg) {
+    try {
+      console.log("[NemApi/gemini] " + msg);
+    } catch (_) {}
+  }
+
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot();
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot(input);
     for (const s of SEND) {
       const nodes = root.querySelectorAll(s);
       for (const el of nodes) {
         if (!el || !B.isVisible(el)) continue;
-        if (B.isDisabled && B.isDisabled(el)) continue;
-        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        // the DISABLED state is NOT filtered here: the caller is the one
+        // waiting for the button to become usable, and filtering it means
+        // never finding it at all.
         const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
         if (/stop|cancel|attach|upload|file|mic|voice/.test(label)) continue;
         return el;
@@ -227,45 +277,54 @@
     return readModelText(last);
   }
 
+  /**
+   * Is the model still streaming?
+   *
+   * Strict and local on purpose: a false positive is not free (the proxy
+   * only accepts a stable answer once the provider is idle). The page-wide
+   * `[aria-busy="true"]` match hits any busy widget of the page and kept it
+   * "busy" for good.
+   */
   function isGenerating() {
-    return !!(
-      document.querySelector('[aria-busy="true"]') ||
-      document.querySelector('button[aria-label*="Stop" i]')
-    );
+    const stop =
+      document.querySelector('button[aria-label*="Stop" i]') ||
+      document.querySelector('button[aria-label*="Arrêter" i]');
+    if (stop && B.isVisible(stop)) return true;
+    // a busy flag INSIDE the last answer only
+    const last = getLastModelResponseEl();
+    if (last) {
+      const busy = last.querySelector('[aria-busy="true"]');
+      if (busy && B.isVisible(busy)) return true;
+    }
+    return false;
   }
 
   async function sendPrompt(text) {
-    let input = findInput();
-    if (!input) {
-      try {
-        input = await B.waitFor("div.ql-editor, .ql-container", 12000);
-      } catch (_) {
-        throw new Error("Gemini: input not found");
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+    });
+    if (!res) {
+      throw new Error(
+        "Gemini: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-    try {
-      input.focus();
-      input.click();
-    } catch (_) {}
-    B.pasteText(input, text);
-    await B.sleep(220);
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 3500)
-      : findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) {
-        await B.sleep(300);
-        return;
-      }
-    }
-    const ed = document.querySelector(".ql-editor") || input;
-    B.pressEnter(ed);
-    await B.sleep(200);
-    btn = findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
+    await B.clickSend({
+      input: res.input,
+      btn: res.btn,
+      findSend,
+      text,
+      log: (m) => log(m),
+      // Gemini turns the send button into a "Stop response" button the
+      // instant the message leaves — a far more reliable "it was sent"
+      // signal than the composer text clearing, which can lag.
+      sentCheck: () =>
+        !!document.querySelector(
+          'button[aria-label="Stop response"], button[aria-label*="Stop" i]'
+        ),
+    });
   }
 
   /**
@@ -365,6 +424,7 @@
     id: "gemini",
     match: (url) => /gemini\.google\.com/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

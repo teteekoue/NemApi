@@ -2,6 +2,11 @@
 "use strict";
 
 const PROXY = "http://127.0.0.1:8090";
+// Long-poll duration of GET /job (the proxy caps it at 25 s). The extension
+// used to poll every 3 s with an immediate answer, adding up to 3 s of
+// latency to EVERY request; the proxy now holds the request until a job is
+// ready, so a job is picked up as soon as it is queued.
+const JOB_LONG_POLL = 20;
 const PROVIDER_MATCH = [
   { id: "deepseek", re: /chat\.deepseek\.com/i },
   { id: "qwen", re: /chat\.qwen\.ai|qianwen\.com/i },
@@ -429,6 +434,7 @@ async function doPoll() {
     return;
   }
   pollInFlight = true;
+  let polledJob = false;
   try {
     await pullConfig();
     await reportTabs();
@@ -449,12 +455,18 @@ async function doPoll() {
     // Check for pending jobs from proxy via /job endpoint
     try {
       // MV3: ne jamais laisser un fetch pendu figer le poll
-      const response = await fetchWithTimeout(PROXY + "/job", { cache: "no-store" }, 30000);
+      // long-poll: the proxy holds the request until a job is queued
+      const response = await fetchWithTimeout(
+        PROXY + "/job?wait=" + JOB_LONG_POLL,
+        { cache: "no-store" },
+        30000
+      );
       const jobData = await response.json();
       
       if (jobData && jobData.action === "ask") {
         const provider = jobData.provider;
         const tabId = targetTabs[provider];
+        polledJob = true;
         
         if (!tabId) {
           extensionLog(`No tab for provider ${provider}`, "warn");
@@ -463,12 +475,18 @@ async function doPoll() {
         }
         
         if (activeJobs[provider]) {
-          extensionLog(`Provider ${provider} busy`, "warn");
+          // The job was already taken from the proxy queue: dropping it silently
+          // leaves the client waiting for the whole job timeout (900 s). Report
+          // the failure instead so the slot is released and the caller gets an
+          // error right away.
+          extensionLog(`Provider ${provider} busy — job rejected`, "warn");
+          postResult(jobData.jobId, "error", `Provider ${provider} is still busy`);
           return;
         }
-        
+
         if (settlingProviders[provider]) {
-          extensionLog(`Provider ${provider} settling`, "warn");
+          extensionLog(`Provider ${provider} settling — job rejected`, "warn");
+          postResult(jobData.jobId, "error", `Provider ${provider} is settling (page reload)`);
           return;
         }
         
@@ -497,6 +515,8 @@ async function doPoll() {
             model: jobData.model,
             premiumMd: jobData.premiumMd !== false,
             jobTimeoutMs: Number(jobData.jobTimeoutMs) || jobTimeoutMs,
+            // multimodal: OpenAI image_url parts, forwarded untouched
+            images: Array.isArray(jobData.images) ? jobData.images : null,
           });
         } catch (e) {
           extensionLog(`Job start failed: ${e.message || e}`, "error");
@@ -511,7 +531,9 @@ async function doPoll() {
     await extensionLog(`Poll error: ${e.message || e}`, "error");
   } finally {
     pollInFlight = false;
-    schedule(3000);
+    // The long-poll already waited for a job (or timed out): a short delay is
+    // enough, a long one would add latency to the next request.
+    schedule(polledJob ? 300 : 1000);
   }
 }
 

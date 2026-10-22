@@ -71,6 +71,25 @@ async def test_dedup_window():
     assert jm.create("same", "qwen", "m") is not a
 
 
+async def test_dedup_takes_the_images_into_account():
+    """The same text with a DIFFERENT image is another request.
+
+    Reusing the job would answer about the wrong picture — a silent wrong
+    answer, the kind that is impossible to debug from the client side.
+    """
+    jm = JobManager(LogBuffer(), dedup_window=5)
+    shot_a = [{"url": "data:image/png;base64,AAAA", "name": "a.png"}]
+    shot_b = [{"url": "data:image/png;base64,BBBB", "name": "b.png"}]
+
+    first = jm.create("regarde", "qwen", "m", images=shot_a)
+    # same text, same image -> the SDK retried, reuse the job
+    assert jm.create("regarde", "qwen", "m", images=shot_a) is first
+    # same text, DIFFERENT image -> another question
+    assert jm.create("regarde", "qwen", "m", images=shot_b) is not first
+    # same text, no image -> another question too
+    assert jm.create("regarde", "qwen", "m") is not first
+
+
 async def test_gc_bounds_memory():
     jm = JobManager(LogBuffer(), dedup_window=0)
     for i in range(400):

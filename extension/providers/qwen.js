@@ -11,17 +11,23 @@
   const B = global.NemApiBase;
 
   const INPUT = [
+    // The most specific selectors first: a bare "textarea" can match an
+    // unrelated hidden field, and writing into the wrong surface is silent
+    // (the text goes nowhere and the send button stays disabled).
     "#chat-input",
-    '[contenteditable="true"][role="textbox"]',
-    'textarea[role="textbox"]',
     "textarea.message-input-textarea",
     "textarea.text-area-box-web",
+    'textarea[role="textbox"]',
+    '[contenteditable="true"][role="textbox"]',
     'textarea[placeholder*="Ask" i]',
     'textarea[placeholder*="message" i]',
     "textarea",
   ];
 
   const SEND = [
+    // Live DOM (rakaarwaky/qwen-web-arwaky): the send control lives in a
+    // `.message-input-right-button-send` wrapper.
+    ".message-input-right-button-send button",
     'button[type="submit"]',
     "button.send-button",
     'button[aria-label*="Send" i]',
@@ -38,6 +44,37 @@
     "[class*='assistant'] [class*='message']",
     "[class*='assistant']",
   ];
+
+  // Image upload (rakaarwaky/qwen-web-arwaky, relevé 2026-08-09 ; live DOM
+  // capture tamga 2026-10-18) : le passage passe par un MENU
+  // (.mode-select-open → item « Upload attachment ») dont l'item ouvre le
+  // SÉLECTEUR NATIF — qu'on ne peut pas piloter depuis un content script et
+  // qui bloquerait la page. On ouvre donc le menu (DOM), on cherche l'input,
+  // et sinon on passe par un collage synthétique (transport « paste »).
+  //
+  // `input#filesUpload` est PERSISTANT dans le DOM (tabindex=-1,
+  // aria-label="Upload files") : c'est lui qu'on viserait en premier. Le
+  // transport « drop » sur #dropzone-container est le plus fiable du site
+  // (deux implémentations indépendantes le privilégient), il reste donc en
+  // recours quand l'input passe inaperçu.
+  const FILE_INPUT = [
+    "input#filesUpload[type='file']",
+    "#filesUpload",
+    "input[type='file'][multiple]:not([capture])",
+    "input[type='file']:not([capture])",
+  ];
+  const ATTACH = [".mode-select-open", "[class*='mode-select']"];
+  const DROP_TARGET = ["#dropzone-container", ".message-input-container"];
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: FILE_INPUT,
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      dropTarget: DROP_TARGET,
+      name: "Qwen",
+    });
+  }
 
   const LANG_RE =
     /^(python|py|javascript|js|typescript|ts|java|c|cpp|c\+\+|csharp|c#|go|rust|ruby|php|swift|kotlin|scala|r|sql|bash|sh|shell|zsh|powershell|ps1|html|css|scss|json|yaml|yml|xml|markdown|md|text|plaintext|plain)$/i;
@@ -482,18 +519,33 @@
     return fromDom || readMessageText(msgEl);
   }
 
+  function log(msg) {
+    try {
+      console.log("[NemApi/qwen] " + msg);
+    } catch (_) {}
+  }
+
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot();
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot(input);
     for (const s of SEND) {
       const nodes = root.querySelectorAll(s);
       for (const el of nodes) {
         if (!el || !B.isVisible(el)) continue;
-        if (B.isDisabled && B.isDisabled(el)) continue;
-        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        // the DISABLED state is NOT filtered here: the caller is the one
+        // waiting for the button to become usable, and filtering it means
+        // never finding it at all.
         const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
         if (/stop|cancel|attach|upload|file|mic|voice/.test(label)) continue;
         return el;
@@ -508,103 +560,27 @@
     return "";
   }
 
-  function inputHasText(el, expected) {
-    if (!el) return false;
-    const sample = String(expected || "").slice(0, 40);
-    if ("value" in el) {
-      const v = el.value || "";
-      return sample ? v.includes(sample) : v.length > 0;
-    }
-    const t = el.innerText || el.textContent || "";
-    return sample ? t.includes(sample) : t.trim().length > 0;
-  }
-
   async function sendPrompt(text) {
-    const payload = String(text ?? "");
-    let input = findInput();
-    if (!input) {
-      try {
-        input = await B.waitFor("#chat-input, textarea, [contenteditable='true']", 12000);
-      } catch (_) {
-        input = findInput();
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+    });
+    if (!res) {
+      throw new Error(
+        "Qwen: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-    if (!input) throw new Error("Qwen: input not found");
-
-    // Wait until input is interactable (after previous reply finished)
-    for (let i = 0; i < 25; i++) {
-      const disabled =
-        input.disabled ||
-        input.getAttribute("aria-disabled") === "true" ||
-        input.getAttribute("contenteditable") === "false";
-      if (!disabled && B.isVisible(input)) break;
-      await B.sleep(200);
-      input = findInput() || input;
-    }
-
-    // Paste with verification + retry (2nd+ message in same thread often needs this)
-    let pasted = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      input = findInput() || input;
-      try {
-        input.focus();
-        input.click();
-      } catch (_) {}
-      await B.sleep(80);
-      B.pasteText(input, payload);
-      await B.sleep(200);
-      if (inputHasText(input, payload)) {
-        pasted = true;
-        break;
-      }
-      await B.sleep(250);
-    }
-    if (!pasted) {
-      // Last resort: native value + events
-      try {
-        if ("value" in input) {
-          input.value = payload;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-        } else {
-          input.textContent = payload;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-        }
-      } catch (_) {}
-      await B.sleep(150);
-    }
-
-    // Wait for Send to enable (shared helper when available)
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 3500)
-      : null;
-    if (!btn) {
-      for (let i = 0; i < 20; i++) {
-        btn = findSend();
-        if (btn && !(B.isDisabled && B.isDisabled(btn))) break;
-        await B.sleep(100);
-        btn = null;
-      }
-    }
-    if (btn) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) return;
-    }
-    B.pressEnter(input);
-    await B.sleep(80);
-    B.pressEnter(input);
+    await B.clickSend({ input: res.input, btn: res.btn, findSend, text, log: (m) => log(m) });
   }
 
   function isGenerating() {
     // Stop button visible, or last assistant message still lacks a copy footer
-    if (
-      document.querySelector(
-        'button[aria-label*="Stop" i], button[aria-label*="停止"], [class*="stop-button"], [class*="stop-generating"]'
-      )
-    ) {
-      return true;
-    }
+    const stop =
+      document.querySelector('button[aria-label*="Stop" i]') ||
+      document.querySelector('button[aria-label*="停止"]');
+    if (stop && B.isVisible(stop)) return true;
     const els = getMessageEls();
     if (!els.length) return false;
     const last = els[els.length - 1];
@@ -612,7 +588,9 @@
     if (findCopyButton(last)) return false;
     // Still streaming if content is short / changing and no copy yet
     const t = (last.innerText || "").trim();
-    return t.length < 8 || !!document.querySelector('[class*="streaming"], [class*="generating"]');
+    if (t.length < 8) return true;
+    const busy = last.querySelector('[class*="streaming"], [class*="generating"]');
+    return !!(busy && B.isVisible(busy));
   }
 
   async function waitForResponse(previous = "") {
@@ -653,6 +631,7 @@
     id: "qwen",
     match: (url) => /chat\.qwen\.ai|qianwen\.com/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

@@ -10,7 +10,7 @@ from ..core.providers import canonical_model, resolve_provider
 from ..schemas import ChatCompletionRequest
 from ..utils.openai_format import approx_tokens
 from ..utils.side_queries import LocalAnswer, classify_local
-from ..utils.tools_format import format_messages_prompt
+from ..utils.tools_format import extract_images, format_messages_prompt
 from .integrations import ActiveIntegration
 from .jobs import DONE, ClientGone, JobTimeout
 from .sessions import Plan, postprocess
@@ -23,6 +23,7 @@ class PreparedCompletion:
     internal_model: str  # canonical model sent to the extension
     prompt: str
     tool_names: List[str]
+    images: List[Dict[str, str]]
     stream: bool
     fresh_chat: Optional[bool]
     plan: Optional[Plan] = None  # incremental-context plan (feature enabled)
@@ -56,8 +57,24 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
     if not isinstance(tools, list):
         tools = None
 
-    prompt = format_messages_prompt(messages, tools=tools)
-    if not prompt.strip():
+    # Classic NemApi unless the request comes from an agent whose integration
+    # is enabled (« Intégration agents IA » page).
+    integration = ctx.integrations.resolve(headers, messages)
+
+    prompt = format_messages_prompt(
+        messages,
+        tools=tools,
+        # An agent that brings its own tool instructions must not be given a
+        # second, contradictory contract (Nemesis writes its own JSON dialect).
+        tool_contract=not (integration is not None and integration.has("native_tool_calls")),
+    )
+    # Images live outside the text prompt: the extension uploads them through
+    # the provider's file input before typing the prompt itself.
+    try:
+        images = extract_images(messages)
+    except ValueError as exc:
+        raise APIError(400, str(exc), "invalid_image") from exc
+    if not prompt.strip() and not images:
         raise APIError(400, "Messages produced an empty prompt.")
 
     tool_names: List[str] = []
@@ -77,16 +94,23 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
 
     plan = None
     local = None
-    # Classic NemApi unless the request comes from an agent whose integration
-    # is enabled (« Intégration agents IA » page).
-    integration = ctx.integrations.resolve(headers, messages)
     if integration is not None:
         side = classify_local(messages, tools, body.model_extra or {})
         if side is not None and integration.has("side_queries_local"):
             local = side  # answered without the browser
         elif integration.has("incremental_context"):
             # known side queries are typed as framed side requests, never as the main conversation
-            plan = ctx.sessions.plan(provider, messages, tools, prompt, tool_names, force_side=side is not None)
+            plan = ctx.sessions.plan(
+                provider, messages, tools, prompt, tool_names,
+                force_side=side is not None,
+                generic_tools=integration.has("native_tool_calls"),
+            )
+
+    # « Discussion unique »: the request must never open a new discussion, so
+    # the web chat keeps the same URL. The client cannot override it.
+    fresh_chat = body.fresh_chat
+    if integration is not None and integration.has("persistent_chat"):
+        fresh_chat = False
 
     return PreparedCompletion(
         plan=plan,
@@ -98,8 +122,9 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
         internal_model=canonical_model(provider),
         prompt=prompt,
         tool_names=tool_names,
+        images=images,
         stream=stream,
-        fresh_chat=body.fresh_chat,
+        fresh_chat=fresh_chat,
     )
 
 
@@ -157,7 +182,7 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
     else:
         job = ctx.jobs.create(
             prep.prompt, prep.provider, prep.internal_model, fresh_chat=prep.fresh_chat,
-            continuation=prep.has("continuation"),
+            continuation=prep.has("continuation"), images=prep.images,
         )
     if prep.plan is not None and job.on_dispatch is None and job.status == "pending":
         plan = prep.plan
@@ -178,7 +203,9 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
     if job.status != DONE:
         raise APIError(500, job.error or "automation failed", "automation_error")
 
-    parsed = job.parsed or postprocess(job.result, prep.tool_names, prep.tools)
+    parsed = job.parsed or postprocess(
+        job.result, prep.tool_names, prep.tools, generic=prep.has("native_tool_calls")
+    )
     # usage/cost always reflect the full conversation (what an API would bill),
     # even when only a delta was typed into the web UI
     prompt_tokens = approx_tokens(prep.prompt)

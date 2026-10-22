@@ -18,6 +18,8 @@ import pytest
 
 playwright_api = pytest.importorskip("playwright.async_api")
 
+from nemapi import __version__  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from virtual_agent import TASK_1, VirtualCodingAgent, WebUIExtension  # noqa: E402
 
@@ -83,7 +85,7 @@ async def test_every_page_has_the_shared_menu(server, browser_page):
             assert any("Intégration agents IA" in t for t in labels), (path, labels)
             assert await page.locator(".sidebar .nav a.active").count() == 1, path
             await _wait_for(lambda: _text_has(page.locator("#hconn"), "Extension connectée"))
-        await _wait_for(lambda: _text_has(page.locator("#side-version"), "v5.0.0"))
+        await _wait_for(lambda: _text_has(page.locator("#side-version"), f"v{__version__}"))
         # theme toggle persists
         await page.click("#theme-btn")
         assert await page.evaluate("document.documentElement.dataset.theme") == "light"

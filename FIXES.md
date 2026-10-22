@@ -431,3 +431,73 @@ pour réécrire un gros fichier, la réponse s'arrêtait au milieu du JSON de
   - les outils `virtual_agent.configure()`, `demo_incremental.py` et
     `chat.py` sont adaptés.
   Résultat : 159 tests passent.
+
+## 11. v5.2.0 — Envoi d'image : le prompt attend la fin de l'upload (2026-10-22)
+
+L'extension v5.2.0 sabeit envoyer une image sur les 7 fournisseurs, mais
+l'enchaînement des deux étapes était faux : **le prompt était tapé pendant
+l'upload**, et l'application le effaçait au re-render qui termine le
+transfert. Le bouton Envoyer restait désactivé et la requête pendait
+jusqu'au watchdog — le bug historique de la v5.1, reconduit sur les 6
+nouveaux fournisseurs.
+
+- **Le prompt attend l'upload** (`base.js:waitUploadFinished`, nouveau).
+  Deux questions, deux témoins : l'application a-t-elle **pris** le fichier
+  (un aperçu apparaît, le nom du fichier s'affiche sur la pastille, l'input
+  a été vidé) et le transfert est-il **terminé** (plus de spinner, la zone
+  d'attachement ne bouge plus). Borné (30 s), jamais « attends que le DOM
+  se calme ».
+- **Un transport ne vaut que s'il est prouvé.** Remplir `input.files` depuis
+  JS n'est pas une preuve — c'est nous qui l'avons rempli. Une application
+  qui ignore les événements dispatchés laissait l'image nulle part et le
+  proxy renvoyait une réponse à une question sans image. L'échec est
+  désormais **explicite** (`500 automation_error`) au lieu d'être silencieux.
+- **DeepSeek** fait la même chose : il faisait confiance à `input.files`,
+  donc il pouvait annoncer un succès sur une image jamais reçue. Il
+  utilise maintenant le même mécanisme, avec `probe: attachmentShown` (son
+  aperçu peut être un `canvas` ou déjà une URL CDN : la preuve est le DOM
+  autour du champ, pas l'image).
+- **Sélecteurs revérifiés en ligne** (sources et captures du DOM réel
+  citées dans `AGENTS.md` §4.3.2) :
+  - ChatGPT : le formulaire du composer contient **quatre** `<input type=file>`
+    (photo / image+vidéo / images / tout fichier) et celui de la photo est
+    le premier dans le DOM — un `input[type=file]` nu atterrit dessus et
+    l'upload est perdu sans un mot. Les sélecteurs excluent `[capture]`, et
+    un `[disabled]` est écarté ;
+  - Claude : `input[data-testid="file-upload"]` (l'input est persistant) et
+    le bouton `button[aria-label="Add files, connectors, and more"]`, qui
+    n'existait pas dans le code ;
+  - Gemini : `images-files-uploader input.hidden-file-input[type=file]` —
+    l'input est monté à l'ouverture du menu, il faut donc cliquer le
+    bouton « Upload & tools » avant de le chercher ;
+  - Qwen : `input#filesUpload` n'est **pas** mort (capture du 2026-10-18) —
+    la croyance inverse circulait dans le code. Le transport « drop » sur
+    `#dropzone-container` est ajouté (le plus fiable du site) ;
+  - Kimi : `input.hidden-input[type=file]` dans `.chat-editor-action` et le
+    bouton `.toolkit-trigger-btn`, qui manquaient ;
+  - Z.ai : `chat.z.ai` et `chatglm.cn` n'ont **pas** le même front-end.
+    `zai.js` distingue maintenant les deux par `location.hostname` :
+    `.messageInputContainer input[type=file]` d'un côté,
+    `.upload-demo input.el-upload__input[type=file]` de l'autre. Sur
+    `chatglm.cn`, l'input est un upload Element-Plus qui **ignore** les
+    événements `input`/`change` : le chemin JS ne peut pas y aboutir, et
+    l'échec doit rester explicite.
+- **`findSend` ne filtre plus les boutons désactivés** dans les 6
+  fournisseurs réécrits. C'est l'appelant qui attend l'activation ;
+  filtrer le bouton désactivé revient à ne jamais le trouver
+  (`AGENTS.md` §4.1).
+- **Z.ai** utilise enfin `sendWithProof` comme les six autres : il écrivait
+  le prompt à l'ancienne main, sans la preuve que l'application l'avait
+  pris, ni la réécriture si la page l'effaçait.
+- **Le dedup du proxy tient compte des images** (`services/jobs.py`). Deux
+  requêtes au même texte mais avec des images **différentes** sont deux
+  questions : la seconde réutilisait le job de la première et recevait une
+  réponse parlant de la mauvaise image.
+- **Tests** (`tests/test_providers_attachments.py`) : le DOM de chaque
+  scénario est celui du vrai site (un sélecteur qui dérive est attrapé) ;
+  l'app listens à **tous** les `<input type=file>` de la page et note
+  lequel a reçu le fichier (ChatGPT en a quatre) ; trois scénarios par
+  fournisseur — l'image arrive avec le texte, le prompt n'est **pas** tapé
+  pendant l'upload, et une app qui ignore les événements ne doit pas
+  annoncer un succès.
+  Résultat : **256 tests passent, 0 échec, 0 ignoré**.

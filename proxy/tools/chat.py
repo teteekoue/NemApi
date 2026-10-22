@@ -22,14 +22,25 @@ Configurer d'abord:
 """
 
 import json
+import os
 import sys
 import time
+from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 # Configuration par defaut (modifiable)
-HOST = "127.0.0.1"
-PORT = 8090
+# Le port vient de la source de verdad du proxy (nemapi/core/settings.py) :
+# il etait code en dur ici et divergait du proxy.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+try:
+    from nemapi.core.settings import Settings as _Settings
+    _DEFAULT_PORT = _Settings.from_env().port
+except Exception:  # pragma: no cover - the proxy package is always next door
+    _DEFAULT_PORT = int(os.environ.get("NEMAPI_PORT", "8090"))
+
+HOST = os.environ.get("NEMAPI_HOST", "127.0.0.1")
+PORT = _DEFAULT_PORT
 AGENT_ID = "qwen-code"
 BASE_URL = f"http://{HOST}:{PORT}"
 

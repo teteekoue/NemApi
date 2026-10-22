@@ -8,33 +8,83 @@
   const B = global.NemApiBase;
 
   const INPUT = [
-    'div[contenteditable="true"][role="textbox"]',
-    'div.ProseMirror[contenteditable="true"]',
-    'div[contenteditable="true"].ProseMirror',
+    // Live DOM (timothy22000/claude-autocontinue, extension/content.js):
+    //   div[contenteditable="true"][data-placeholder]  (a ProseMirror editor)
+    // The most specific selector first, the generic ones last (writing into
+    // the wrong surface is silent — the text goes nowhere and the send
+    // button stays disabled).
+    'div[contenteditable="true"][data-placeholder]',
+    "div.ProseMirror[contenteditable='true']",
+    "div[contenteditable='true'].ProseMirror",
     '[data-testid="chat-input"]',
+    'div[contenteditable="true"][role="textbox"]',
     'div[contenteditable="true"]',
   ];
 
   const SEND = [
     'button[aria-label*="Send message" i]',
-    'button[aria-label*="Send" i]',
     'button[data-testid="send-button"]',
     'button[type="submit"]',
+    'button[aria-label*="Send" i]',
     '[role="button"][aria-label*="Send" i]',
   ];
+
+  // Image upload: the file input is PERSISTENT in the DOM (live DOM capture,
+  // tamga 2026-10-11: `<input type="file" multiple hidden data-testid="file-upload">`).
+  // `input[data-testid="file-upload"]` is the verified anchor; a bare
+  // "input[type=file]" is ambiguous (the account/avatar menu has one too).
+  // The "+" button opens the menu "Add files or photos" — it is only a
+  // fallback, because the input is already there.
+  const FILE_INPUT = [
+    "input[data-testid='file-upload']",
+    "input#chat-input-file-upload-onpage",
+    "input[type='file'][multiple]:not([capture])",
+    "input[type='file']:not([capture])",
+  ];
+  const ATTACH = [
+    'button[aria-label="Add files, connectors, and more"]',
+    'button[aria-label*="Add files" i]',
+  ];
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: FILE_INPUT,
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      name: "Claude",
+    });
+  }
+
+  function log(msg) {
+    try {
+      console.log("[NemApi/claude] " + msg);
+    } catch (_) {}
+  }
 
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot();
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   *
+   * `input` is the surface we wrote to: anchoring the search on it avoids
+   * picking a send button that belongs to another part of the page.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot(input);
     for (const s of SEND) {
       const nodes = root.querySelectorAll(s);
       for (const el of nodes) {
         if (!el || !B.isVisible(el)) continue;
-        if (B.isDisabled && B.isDisabled(el)) continue;
-        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        // the DISABLED state is NOT filtered here: the caller is the one
+        // waiting for the button to become usable, and filtering it means
+        // never finding it at all.
         const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
         if (/stop|cancel|attach|upload|file/.test(label)) continue;
         return el;
@@ -151,40 +201,34 @@
     return extractFromDom(root);
   }
 
+  /**
+   * Is the model still streaming?
+   *
+   * Strict and local on purpose: a false positive is not free (the proxy
+   * only accepts a stable answer once the provider is idle), and a
+   * page-wide match on a class name keeps the page "busy" forever.
+   * Claude exposes the state explicitly on the streaming node.
+   */
   function isGenerating() {
-    return !!(
-      document.querySelector('[data-is-streaming="true"]') ||
-      document.querySelector('button[aria-label*="Stop" i]')
-    );
+    const streaming = document.querySelector('[data-is-streaming="true"]');
+    if (streaming) return true;
+    const stop = document.querySelector('button[aria-label*="Stop" i]');
+    return !!(stop && B.isVisible(stop));
   }
 
   async function sendPrompt(text) {
-    const input =
-      findInput() ||
-      (await B.waitFor('div.ProseMirror[contenteditable="true"]', 12000).catch(() => null));
-    if (!input) throw new Error("Claude: input not found");
-    try {
-      input.focus();
-      input.click();
-    } catch (_) {}
-    B.pasteText(input, text);
-    await B.sleep(220);
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 3500)
-      : findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) {
-        await B.sleep(300);
-        return;
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+    });
+    if (!res) {
+      throw new Error(
+        "Claude: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-    B.pressEnter(input);
-    await B.sleep(200);
-    btn = findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
+    await B.clickSend({ input: res.input, btn: res.btn, findSend, text, log: (m) => log(m) });
   }
 
   /**
@@ -274,6 +318,7 @@
     id: "claude",
     match: (url) => /claude\.ai/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

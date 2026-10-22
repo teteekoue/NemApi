@@ -78,15 +78,20 @@ def find_truncated_call(text: str) -> Optional[int]:
         if not _DSML_PARAM_CLOSE_RE.search(after) and not _DSML_BLOCK_CLOSE_RE.search(after):
             blocks = list(_DSML_BLOCK_OPEN_RE.finditer(t[: last.start()]))
             return blocks[-1].start() if blocks else last.start()
-    # 3) ````tool fence holding bare JSON that never ends (model dropped <tool>)
+    # 3) ````tool fence holding bare JSON that never ends.
+    #    The JSON must END inside the fence: a fence that closes around an
+    #    incomplete JSON is an answer that was cut off inside the call (the
+    #    renderer closes the fence for us), and repairing it would hand the
+    #    agent a truncated file while reporting success.
     fences = list(_FENCE_OPEN_RE.finditer(t))
-    if fences:
-        f = fences[-1]
-        if f.group(2):  # a "tool" fence
-            body = t[f.end():]
-            closing = re.search(rf"(?m)^[ \t]*{re.escape(f.group(1))}[`~]*[ \t]*$", body)
-            if not closing and body.strip().startswith(("{", "[")) and not _json_complete(body):
-                return f.start()
+    for f in fences:
+        if not f.group(2):  # only a "tool" fence
+            continue
+        body = t[f.end():]
+        closing = re.search(rf"(?m)^[ \t]*{re.escape(f.group(1))}[`~]*[ \t]*$", body)
+        inner = body[: closing.start()] if closing else body
+        if inner.strip().startswith(("{", "[")) and not _json_complete(inner):
+            return f.start()
     return None
 
 

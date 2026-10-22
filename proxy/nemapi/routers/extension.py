@@ -41,6 +41,8 @@ async def next_job(
         "premiumMd": ctx.config.get("premium_md"),
         "jobTimeoutMs": int(ctx.settings.job_timeout * 1000),
         "continuation": job.parent is not None,
+        # multimodal: the extension uploads these before typing the prompt
+        "images": job.images or None,
     }
 
 

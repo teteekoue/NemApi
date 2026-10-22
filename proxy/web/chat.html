@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Chat test</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="stylesheet" href="/admin.css?v=5.2.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="chat" data-title="Chat test">
@@ -29,8 +29,11 @@
           <button class="btn" id="chat-clear" type="button">Effacer</button>
         </div>
         <div class="chat-body" id="chat-body"></div>
+        <div class="attach-row" id="chat-attach-row"></div>
         <div class="chat-input">
-          <textarea id="chat-input" class="input" rows="1" placeholder="Message… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne)"></textarea>
+          <input type="file" id="chat-file" accept="image/*" multiple hidden>
+          <button class="btn attach-btn" id="chat-attach" type="button" title="Joindre une image (envoyée en image_url, format OpenAI)" aria-label="Joindre une image"></button>
+          <textarea id="chat-input" class="input" rows="1" placeholder="Message… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne, Ctrl+V pour coller une capture)"></textarea>
           <button class="btn btn-primary" id="chat-send" type="button">Envoyer</button>
         </div>
       </div>
@@ -38,7 +41,7 @@
   </div>
 </div>
 
-<script src="/admin.js?v=5.0.0"></script>
+<script src="/admin.js?v=5.2.0"></script>
 <script>
 "use strict";
 let chatHistory = [];
@@ -67,17 +70,113 @@ async function loadModels() {
 }
 $("chat-model").addEventListener("change", () => { try { localStorage.setItem("nemapi-chat-model", $("chat-model").value); } catch (_) {} });
 
-function addMsg(role, text) {
+function addMsg(role, text, images) {
   const body = $("chat-body");
   body.querySelector(".empty-chat")?.remove();
   const div = document.createElement("div");
   div.className = "bubble " + role;
   div.innerHTML = `<div class="who">${role === "user" ? "Vous" : "Assistant"}</div><div class="content"></div>`;
-  div.querySelector(".content").textContent = text;
+  const content = div.querySelector(".content");
+  content.textContent = text;
+  if (images && images.length) {
+    const thumbs = document.createElement("div");
+    thumbs.className = "thumbs";
+    for (const img of images) {
+      const el = document.createElement("img");
+      el.src = img.url;
+      el.alt = img.name || "image";
+      el.title = img.name || "";
+      thumbs.appendChild(el);
+    }
+    div.appendChild(thumbs);
+  }
   body.appendChild(div);
   body.scrollTop = body.scrollHeight;
   return div;
 }
+
+/* ---------------------------------------------------------------- attachments */
+// OpenAI multimodal format: the image goes in the message as an image_url
+// part (base64 data URL). The proxy forwards it to the extension, which
+// uploads it through the provider's own file input.
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+let pendingImages = [];
+
+function humanSize(n) {
+  if (n < 1024) return n + " o";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " Ko";
+  return (n / (1024 * 1024)).toFixed(2) + " Mo";
+}
+
+function renderAttachments() {
+  const row = $("chat-attach-row");
+  row.innerHTML = "";
+  pendingImages.forEach((img, i) => {
+    const chip = document.createElement("div");
+    chip.className = "attach-chip";
+    chip.innerHTML = `<img alt=""><div class="meta"><span class="name"></span><span class="size"></span></div><button class="rm" type="button" title="Retirer">×</button>`;
+    chip.querySelector("img").src = img.url;
+    chip.querySelector(".name").textContent = img.name;
+    chip.querySelector(".size").textContent = humanSize(img.size);
+    chip.querySelector(".rm").addEventListener("click", () => {
+      pendingImages.splice(i, 1);
+      renderAttachments();
+    });
+    row.appendChild(chip);
+  });
+}
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ""));
+    fr.onerror = () => reject(fr.error || new Error("lecture impossible"));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function addFiles(fileList) {
+  for (const file of Array.from(fileList || [])) {
+    if (!/^image\//.test(file.type)) {
+      toast(`${file.name} : seules les images sont acceptées`, "error");
+      continue;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast(`${file.name} : trop lourd (max ${humanSize(MAX_IMAGE_BYTES)})`, "error");
+      continue;
+    }
+    if (pendingImages.length >= 8) {
+      toast("Maximum 8 images par message", "error");
+      break;
+    }
+    try {
+      const url = await readAsDataURL(file);
+      pendingImages.push({ url, name: file.name, size: file.size });
+    } catch (e) {
+      toast(`${file.name} : ${e.message}`, "error");
+    }
+  }
+  renderAttachments();
+}
+
+$("chat-attach").innerHTML = icon("paperclip", "");
+$("chat-attach").addEventListener("click", () => $("chat-file").click());
+$("chat-file").addEventListener("change", async (e) => {
+  await addFiles(e.target.files);
+  e.target.value = "";  // same file can be picked again
+});
+// drag & drop of images onto the conversation
+["dragover", "drop"].forEach((type) =>
+  $("chat-body").addEventListener(type, (e) => {
+    e.preventDefault();
+    if (type === "drop" && e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  })
+);
+// paste an image from the clipboard (screenshot)
+document.addEventListener("paste", (e) => {
+  const files = Array.from(e.clipboardData?.files || []).filter((f) => /^image\//.test(f.type));
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
 
 async function streamChat(model, messages, onDelta) {
   const headers = { "Content-Type": "application/json" };
@@ -117,17 +216,28 @@ async function send() {
   if (busy) return;
   const model = $("chat-model").value;
   const text = $("chat-input").value.trim();
-  if (!text || !model) return;
+  const images = pendingImages.slice();
+  if ((!text && !images.length) || !model) return;
   const system = $("chat-context").value.trim();
   $("chat-input").value = "";
-  addMsg("user", text);
+  pendingImages = [];
+  renderAttachments();
+  addMsg("user", text || "(image)", images);
   const el = addMsg("assistant", "");
   const content = el.querySelector(".content");
   content.innerHTML = '<span class="cursor"></span>';
   busy = true;
   $("chat-send").disabled = true;
   let full = "";
-  const messages = [...(system ? [{ role: "system", content: system }] : []), ...chatHistory, { role: "user", content: text }];
+  // OpenAI multimodal shape: text part + one image_url part per image. Only
+  // the last turn carries images: the proxy forwards those to the extension.
+  const userContent = images.length
+    ? [
+        ...(text ? [{ type: "text", text }] : []),
+        ...images.map((img) => ({ type: "image_url", image_url: { url: img.url }, filename: img.name })),
+      ]
+    : text;
+  const messages = [...(system ? [{ role: "system", content: system }] : []), ...chatHistory, { role: "user", content: userContent }];
   try {
     await streamChat(model, messages, (d) => {
       full += d;
@@ -135,7 +245,7 @@ async function send() {
       $("chat-body").scrollTop = $("chat-body").scrollHeight;
     });
     if (!full) content.textContent = "(réponse vide)";
-    chatHistory.push({ role: "user", content: text }, { role: "assistant", content: full });
+    chatHistory.push({ role: "user", content: userContent }, { role: "assistant", content: full });
   } catch (e) {
     el.classList.add("error");
     el.querySelector(".who").textContent = "Erreur";
@@ -151,7 +261,12 @@ $("chat-send").addEventListener("click", send);
 $("chat-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
-$("chat-clear").addEventListener("click", () => { chatHistory = []; $("chat-body").innerHTML = EMPTY; });
+$("chat-clear").addEventListener("click", () => {
+  chatHistory = [];
+  pendingImages = [];
+  renderAttachments();
+  $("chat-body").innerHTML = EMPTY;
+});
 
 loadModels();
 api("/api-keys/config").then((c) => { $("api-key-field").hidden = !c.require_auth; }).catch(() => {});

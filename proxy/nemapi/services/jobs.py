@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -20,6 +21,22 @@ from .logs import LogBuffer
 
 PENDING, DISPATCHED, DONE, ERROR, CANCELLED = "pending", "dispatched", "done", "error", "cancelled"
 ACTIVE_STATES = (PENDING, DISPATCHED)
+
+
+def _image_fingerprints(images: Optional[List[Dict[str, str]]]) -> List[str]:
+    """Identify the images of a request without keeping the megabytes around.
+
+    The base64 is hashed: the dedup only needs to know whether the two
+    requests carry the SAME pictures, and a digest is enough for that.
+    """
+    out: List[str] = []
+    for img in images or []:
+        url = (img or {}).get("url") or ""
+        if not url:
+            continue
+        digest = hashlib.sha256(url.encode("utf-8", "replace")).hexdigest()[:32]
+        out.append(f"{digest}:{(img or {}).get('name') or ''}")
+    return out
 
 
 @dataclass(eq=False)
@@ -56,6 +73,8 @@ class Job:
     continuations: int = 0
     alive_at: float = 0.0  # last sign of progress (timeouts count from here)
     allow_continuation: bool = False  # ask for the rest of an answer cut inside a tool call
+    # OpenAI image_url parts, uploaded through the provider's file input
+    images: List[Dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.key = self.key or self.question
@@ -101,9 +120,16 @@ class JobManager:
 
     # ------------------------------------------------------------ creation
     def create(
-        self, question: str, provider: str, model: str, fresh_chat: Optional[bool] = None, continuation: bool = False
+        self,
+        question: str,
+        provider: str,
+        model: str,
+        fresh_chat: Optional[bool] = None,
+        continuation: bool = False,
+        images: Optional[List[Dict[str, str]]] = None,
     ) -> Job:
         now = time.time()
+        image_ids = _image_fingerprints(images)
         for existing in reversed(self.jobs.values()):
             if now - existing.created_at > self.dedup_window:
                 break  # jobs are ordered by creation time
@@ -111,10 +137,15 @@ class JobManager:
                 existing.status in ACTIVE_STATES
                 and existing.provider == provider
                 and existing.key == question
+                # The images are part of the request: the same text with a
+                # DIFFERENT image is another question, and reusing the job
+                # would answer about the wrong picture.
+                and _image_fingerprints(existing.images) == image_ids
             ):
                 self.logs.info(f"Dedup: reuse job {existing.short_id} (identical in-flight request)")
                 return existing
         job = Job(question=question, provider=provider, model=model, fresh_chat=fresh_chat)
+        job.images = list(images or [])
         job.allow_continuation = continuation  # agent integration feature (off in classic mode)
         self.jobs[job.id] = job
         self.queues.setdefault(provider, deque()).append(job)

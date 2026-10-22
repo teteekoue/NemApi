@@ -34,9 +34,12 @@ def local_ip() -> str:
 
 
 def main() -> None:
+    # the default comes from the settings (single source of truth): the help
+    # used to announce a port that the proxy did not actually listen on
+    default_port = Settings.from_env().port
     parser = argparse.ArgumentParser(description="NemApi proxy")
     parser.add_argument("--host", default=None, help="Interface d'écoute (défaut 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=None, help="Port (défaut 8090)")
+    parser.add_argument("--port", type=int, default=None, help=f"Port (défaut {default_port})")
     parser.add_argument("--log-level", default=None, help="debug | info | warning | error")
     args = parser.parse_args()
 

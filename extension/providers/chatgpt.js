@@ -8,12 +8,18 @@
   const B = global.NemApiBase;
 
   const INPUT = [
-    "#prompt-textarea",
-    'form[data-type="unified-composer"] #prompt-textarea[contenteditable="true"]',
+    // Live DOM (Octo-Lex/ChatGPT-Web2API, chatgpt_dom.py):
+    //   div[role="textbox"]#prompt-textarea  (a ProseMirror editor)
+    // ⚠️ a hidden `textarea#prompt-textarea` (fallbackTextarea) also exists
+    //    and receives nothing — it must never be written into.
+    'div[role="textbox"]#prompt-textarea[contenteditable="true"]',
+    'div[role="textbox"].ProseMirror[contenteditable="true"]',
     "#prompt-textarea.ProseMirror[contenteditable='true']",
+    'form[data-type="unified-composer"] #prompt-textarea[contenteditable="true"]',
     'div[contenteditable="true"][role="textbox"][aria-label*="Chat" i]',
     'div[contenteditable="true"][data-id="root"]',
-    'div.ProseMirror[contenteditable="true"]',
+    "div.ProseMirror[contenteditable='true']",
+    "textarea#prompt-textarea:not(.wcDTda_fallbackTextarea)",
     'textarea[aria-label*="Chat" i]',
     'textarea[placeholder*="Ask" i]',
   ];
@@ -23,7 +29,7 @@
     "#composer-submit-button",
     'button[aria-label="Send prompt"]',
     'button[aria-label*="Send prompt" i]',
-    'button[aria-label*="Send" i]',
+    'button[aria-label*="Send" i]:not([data-testid="stop-button"])',
     'button[data-testid*="send" i]',
   ];
 
@@ -35,18 +41,58 @@
     'article[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
   ];
 
+  // Image upload (Octo-Lex/ChatGPT-Web2API, lumingya/universal-web-api):
+  // the composer form holds SEVERAL file inputs (camera / image+video /
+  // images only / any file) and the camera one comes first in the DOM — a
+  // bare "input[type=file]" lands on it and the upload is lost. The
+  // discriminating selectors are the ones that exclude `capture`.
+  const FILE_INPUT = [
+    "form input[type='file'][accept='image/*'][multiple]:not([capture])",
+    "form input[type='file'][multiple]:not([capture]):not([disabled])",
+    "input[type='file'][data-testid='file-upload-input']",
+    "input[type='file'][multiple]:not([capture])",
+    "input[type='file']:not([capture])",
+  ];
+  // `data-testid` is the stable anchor: the aria-label is LOCALIZED
+  // ("Add files and more" in English, "Dosya ekle" in Turkish).
+  const ATTACH = ['button[data-testid="composer-plus-btn"]', 'button[aria-label="Add files and more"]'];
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: FILE_INPUT,
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      name: "ChatGPT",
+    });
+  }
+
+  function log(msg) {
+    try {
+      console.log("[NemApi/chatgpt] " + msg);
+    } catch (_) {}
+  }
+
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot ? B.findComposerRoot() : document;
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot ? B.findComposerRoot(input) : document;
     for (const s of SEND) {
       const nodes = root.querySelectorAll(s);
       for (const el of nodes) {
         if (!el || !B.isVisible(el)) continue;
-        if (B.isDisabled && B.isDisabled(el)) continue;
-        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        // the DISABLED state is NOT filtered here: the caller is the one
+        // waiting for the button to become usable, and filtering it means
+        // never finding it at all.
         const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""}`.toLowerCase();
         if (/stop|cancel|attach|upload|file|mic|voice|dictate/.test(label)) continue;
         return el;
@@ -239,48 +285,59 @@
     return "";
   }
 
+  /**
+   * Cheap read for the polling: the assistant node's innerText.
+   *
+   * The innerText of the message IS populated during the streaming, while
+   * the textContent of the `.markdown` block LAGS. Reading the markdown
+   * during the polling therefore truncates the answer (the markdown
+   * conversion is also far too heavy to run every 400 ms).
+   */
+  function readCheapText(msgEl) {
+    if (!msgEl) return "";
+    try {
+      return String(msgEl.innerText || msgEl.textContent || "");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * Is the model still streaming?
+   *
+   * The Stop button FLICKERS off between two token batches, so it is not a
+   * reliable signal on its own: it would make the page look idle in the
+   * middle of a long answer. The turn action bar (copy, like, …) only
+   * appears when the message is finished — a last turn without it is still
+   * streaming.
+   */
   function isGenerating() {
-    return !!(
-      document.querySelector('.result-streaming[aria-busy="true"]') ||
-      document.querySelector('[aria-busy="true"] .result-streaming') ||
-      document.querySelector(".result-streaming") ||
-      document.querySelector('button[aria-label*="Stop" i]') ||
+    const stop =
       document.querySelector('button[data-testid="stop-button"]') ||
-      document.querySelector('button[aria-label*="Stop generating" i]')
-    );
+      document.querySelector('button[aria-label*="Stop generating" i]') ||
+      document.querySelector('button[aria-label*="Stop" i]');
+    if (stop && B.isVisible(stop)) return true;
+    const els = getMessageEls();
+    if (els.length) {
+      const last = els[els.length - 1];
+      if (!findCopyButton(last) && !findCopyButton(last.parentElement)) return true;
+    }
+    return false;
   }
 
   async function sendPrompt(text) {
-    let input = findInput();
-    if (!input) {
-      try {
-        input = await B.waitFor("#prompt-textarea, [contenteditable='true']", 12000);
-      } catch (_) {
-        throw new Error("ChatGPT: input not found");
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+    });
+    if (!res) {
+      throw new Error(
+        "ChatGPT: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-    try {
-      input.focus();
-      input.click();
-    } catch (_) {}
-    B.pasteText(input, text);
-    await B.sleep(280);
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 4000)
-      : findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) {
-        await B.sleep(300);
-        return;
-      }
-    }
-    B.pressEnter(input);
-    await B.sleep(200);
-    btn = findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
+    await B.clickSend({ input: res.input, btn: res.btn, findSend, text, log: (m) => log(m) });
   }
 
   async function waitForResponse(previous = "") {
@@ -292,6 +349,7 @@
         stableMs: 2800,
         previous,
         newElTimeout: 40000,
+        readCheap: readCheapText,
       });
     } else {
       await B.waitUntilStable(
@@ -341,6 +399,7 @@
     id: "chatgpt",
     match: (url) => /chatgpt\.com|chat\.openai\.com/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

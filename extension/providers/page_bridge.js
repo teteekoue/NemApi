@@ -96,6 +96,61 @@
     return best;
   }
 
+  /**
+   * Value React currently holds for a controlled field (the textarea).
+   *
+   * The isolated world can only see the DOM value, which is NOT the same
+   * thing: React keeps its own state and re-writes the DOM on the next
+   * render. A write that React ignored therefore leaves a textarea that
+   * *looks* filled for a few hundred milliseconds and is then silently
+   * emptied — which is exactly what happens when the text is typed while the
+   * page re-renders (end of an image upload). Reading the controlled value
+   * tells us for sure whether React accepted the write.
+   *
+   * Returns null when the fiber is unreachable (uncontrolled field, page
+   * changed, bridge not loaded): the caller then falls back to the DOM value.
+   */
+  function readReactValue(el) {
+    if (!el) return null;
+    let fiber = fiberOf(el);
+    for (let i = 0; fiber && i < 8; i++) {
+      const props = fiber.memoizedProps || fiber.pendingProps;
+      if (props && typeof props === "object" && Object.prototype.hasOwnProperty.call(props, "value")) {
+        const v = props.value;
+        return typeof v === "string" ? v : v == null ? "" : String(v);
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  /**
+   * The Quill instance that owns a Quill editor, if any.
+   *
+   * Quill v1 attaches itself to its container: `container.__quill = this`
+   * (core/quill.js, constructor). The container is the `.ql-container`
+   * element, the editable root is the `.ql-editor` inside it.
+   *
+   * This lookup only works in the PAGE world: an expando set on a DOM node
+   * belongs to the JS realm that set it, and the isolated world has its own
+   * realm — it cannot see `container.__quill`. That is why the write goes
+   * through this bridge.
+   */
+  function findQuillInstance(el) {
+    if (!el) return null;
+    try {
+      if (el.__quill) return el.__quill;
+      const container = el.closest && el.closest(".ql-container");
+      if (container && container.__quill) return container.__quill;
+      let node = el;
+      for (let i = 0; i < 4 && node; i++) {
+        if (node.__quill) return node.__quill;
+        node = node.parentElement;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   // Clipboard hook, needed before Chrome 111 only: background.js cannot run
   // executeScript in the MAIN world there, while the page itself (React
   // "Copy" buttons) keeps calling navigator.clipboard.writeText. The isolated
@@ -190,5 +245,68 @@
       el.removeAttribute("data-nemapi-md-req");
       el.setAttribute("data-nemapi-md", md);
     });
+  });
+
+  // Controlled value of a field (the composer textarea): lets the isolated
+  // world know whether React really holds the text it wrote.
+  document.addEventListener("nemapi:read-value", function () {
+    const els = document.querySelectorAll("[data-nemapi-val-req]");
+    els.forEach((el) => {
+      let v = null;
+      let ok = false;
+      try {
+        v = readReactValue(el);
+        ok = v !== null;
+      } catch (_) {
+        v = null;
+      }
+      el.removeAttribute("data-nemapi-val-req");
+      if (ok) {
+        el.setAttribute("data-nemapi-val", v);
+        el.setAttribute("data-nemapi-val-ok", "1");
+      } else {
+        el.removeAttribute("data-nemapi-val");
+        el.removeAttribute("data-nemapi-val-ok");
+      }
+    });
+  });
+  // Write into a Quill editor through the page world.
+  //
+  // The app reads Quill's MODEL, and the instance only exists in the page
+  // realm (`container.__quill` is invisible from the isolated world). The
+  // isolated world therefore asks this bridge to do the write.
+  //
+  // "user" is the source of a real paste: an app that only reacts to
+  // user-initiated changes ignores an "api" write. The fallback covers the
+  // opposite case — a read-only editor refuses a "user" write (Quill's
+  // `strict` mode) but accepts an "api" one.
+  document.addEventListener("nemapi:set-quill", function (e) {
+    const detail = (e && e.detail) || {};
+    const text = detail.text == null ? "" : String(detail.text);
+    // The element is identified by an attribute, not by the event payload:
+    // a DOM node cannot be carried across the two JS realms, while an
+    // attribute is part of the shared DOM.
+    const targets = document.querySelectorAll("[data-nemapi-quill-target]");
+    for (const el of targets) {
+      let ok = false;
+      try {
+        const quill = findQuillInstance(el);
+        if (quill) {
+          quill.setText(text, "user");
+          if (String(quill.getText() || "").trim() !== text.trim()) {
+            quill.setText(text, "api");
+          }
+          ok = true;
+        }
+      } catch (_) {
+        ok = false;
+      }
+      try {
+        el.setAttribute("data-nemapi-quill-ok", ok ? "1" : "0");
+        try {
+          el.setAttribute("data-nemapi-quill-text", ok ? String(quill.getText() || "") : "");
+        } catch (_) {}
+      } catch (_) {}
+    }
   });
 })();

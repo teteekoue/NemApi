@@ -1,8 +1,15 @@
-# NemApi v5.0.0
+# NemApi v5.2.0
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
+>
+> Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+**Nouveautés v5.2.0 :**
+- ✅ **Intégration NEMESIS** (2ᵉ agent de la page « Intégration agents IA ») : une seule discussion web (plus jamais d'URL neuve) et **appels d'outils natifs** — les appels JSON de l'agent sont renvoyés au format OpenAI `tool_calls`. Pas de contexte incrémental : NEMESIS n'envoie que ce dont il a besoin
+- ✅ **Images sur les 7 fournisseurs** : DeepSeek n'était pas le seul à savoir envoyer une image — l'upload passe maintenant par le même mécanisme pour Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai
+- ✅ **Page « Intégration agents IA » réorganisée** : une carte par agent (chips de synthèse, fonctions, configuration à copier), section « Agents » dans le menu
 
 **Nouveautés v5.0.0 :**
 - ✅ **Nouvel onglet « Intégration agents IA »** (menu ☰ → `http://127.0.0.1:8090/integrations`) : une carte par agent de code (Qwen Code pour l'instant), **désactivée par défaut**. Activée, elle allume pour les requêtes de cet agent le contexte incrémental et toutes les fonctions agent ajoutées depuis la v4.2 ; désactivée, NemApi garde son **comportement classique** (v4.0)
@@ -186,6 +193,31 @@ curl -sS http://127.0.0.1:8090/v1/chat/completions \
 | `stream` | `true` : SSE · `false` : JSON · absent : réglage global (un en-tête `Accept: text/event-stream` force le SSE) |
 | `tools` | Outils au format OpenAI ; les appels détectés sont renvoyés en `tool_calls` |
 
+### Images (multimodal)
+
+Une requête peut joindre des images au format OpenAI, sur le **dernier** message `user` :
+
+```json
+{
+  "model": "deepseek-chat",
+  "messages": [{
+    "role": "user",
+    "content": [
+      { "type": "text", "text": "Que montre cette capture ?" },
+      { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0…" } }
+    ]
+  }]
+}
+```
+
+- **data: URL base64 obligatoire** — les URL distantes sont refusées (400 `invalid_image`) : l'extension ne doit jamais aller chercher une URL arbitraire avec les cookies du fournisseur.
+- Limites : 20 Mo par image, 8 images par requête.
+- Seul le **dernier** message `user` porte les images : la discussion web contient déjà celles des tours précédents.
+- L'image est uploadée via l'`input[type=file]` de l'interface web, comme une pièce jointe manuelle ; **le base64 n'est jamais tapé en texte** dans le prompt.
+- Test direct depuis `http://127.0.0.1:8090/chat` (bouton trombone, glisser-déposer, Ctrl+V).
+- ✅ Les **7 fournisseurs** acceptent les images (DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi, Z.ai) : l'upload passe par le `<input type=file>` de la page, puis le prompt attend la fin de l'upload, il est réécrit si la page l'efface, et l'envoi n'est déclenché qu'une fois le bouton Envoyer actif (cf. `AGENTS.md` §4.3).
+- ⚠️ Si la page ne prend pas l'image, la requête **échoue** (`500 automation_error`) au lieu d'envoyer un message sans son image : une image perdue en silence est pire qu'un échec franc. `chatglm.cn` (智谱清言) est le cas connu où le chemin JS ne peut pas aboutir — son front-end ignore les événements `input`/`change` sur son `<input type=file>` (cf. `AGENTS.md` §4.3.2).
+
 ### Codes d'erreur
 
 | Code | `error.type` | Signification |
@@ -245,6 +277,27 @@ Page **Intégration agents IA** (menu ☰ ou `http://127.0.0.1:8090/integrations
 | Connexion maintenue | en streaming, en-têtes envoyés tout de suite puis un signal toutes les 15 s |
 
 Reconnaissance de l'agent, à chaque requête : en-tête `X-NemApi-Agent: qwen-code` (prioritaire ; une autre valeur force le mode classique) → `User-Agent` `QwenCode/…` (envoyé par Qwen Code) → prompt système « You are Qwen Code ». La carte indique quand Qwen Code a été vu pour la dernière fois et comment, et le tableau « Clients récents » montre le mode appliqué à chaque client.
+
+**Nemesis** — [NEMESIS-AGENT](https://github.com/teteekoue/NEMESIS-AGENT) n'envoie que le message courant : il gère son contexte de son côté et n'a pas besoin du contexte incrémental de NemApi. Son intégration apporte les deux autres avantages :
+
+| Fonction | Effet |
+|---|---|
+| Discussion unique | la requête n'ouvre **jamais** une nouvelle discussion : l'URL du chat web reste la même, l'agent continue dans la discussion ouverte (le réglage « Nouvelle discussion à chaque requête » est ignoré pour lui) |
+| Appels d'outils natifs | les appels d'outils écrits par l'agent (JSON dans un bloc ` ```json `) sont renvoyés au format OpenAI `tool_calls` au lieu de rester dans le texte. Le contrat d'outils de NemApi n'est **pas** injecté : c'est l'agent qui décide du format |
+
+Configuration (section `nemapi` du `config.yaml` de NEMESIS) :
+
+```yaml
+provider:
+  type: nemapi
+  model: deepseek-chat
+
+nemapi:
+  url: "http://127.0.0.1:8090/v1"
+  # token: nemapi-token…   # si la protection API est active
+```
+
+Reconnaissance : en-tête `X-NemApi-Agent: nemesis` → `User-Agent` `Nemesis-Agent/…` → prompt système « NEMESIS Runtime Prompt » (NEMESIS fusionne son prompt système dans le **premier message utilisateur**, il est donc cherché là aussi).
 
 Restent actifs pour tout le monde, intégration ou non : la lecture des appels d'outils (DSML, `<tool>`…), le contrat ` ````tool `, la robustesse de l'extension et la protection contre l'exécution d'un appel d'outil coupé.
 

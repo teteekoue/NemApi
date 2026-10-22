@@ -312,7 +312,17 @@ textarea { resize: vertical; }
 .model-chip { font: 12px var(--mono); padding: 3px 9px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); }
 
 /* ------------------------------------------------------------------ agent integrations */
+.agents-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 16px; align-items: start; }
 .agent-card { padding: 0; overflow: hidden; }
+.agent-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 650; color: var(--muted);
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.chip.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: var(--ok-soft); }
+.chip.off { opacity: 0.6; }
+.chip svg { width: 12px; height: 12px; }
 .agent-top { display: flex; gap: 16px; align-items: flex-start; padding: 22px; }
 .agent-logo {
   width: 52px; height: 52px; flex: 0 0 52px; border-radius: 14px; display: grid; place-items: center;
@@ -386,6 +396,21 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
 @keyframes blink { 50% { opacity: 0; } }
 .chat-input { display: flex; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); align-items: flex-end; }
 .chat-input textarea { min-height: 44px; max-height: 180px; }
+/* attachments (images sent as OpenAI image_url parts) */
+.attach-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px 0; }
+.attach-row:empty { display: none; }
+.attach-chip { position: relative; display: flex; align-items: center; gap: 8px; padding: 5px 30px 5px 5px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-size: 12px; max-width: 240px; }
+.attach-chip img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; display: block; background: var(--surface); }
+.attach-chip .meta { min-width: 0; display: grid; gap: 1px; }
+.attach-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.attach-chip .size { color: var(--faint); font-size: 11px; }
+.attach-chip .rm { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; line-height: 1; font-size: 15px; }
+.attach-chip .rm:hover { background: var(--danger-soft); color: var(--danger); }
+.attach-btn { flex: 0 0 auto; align-self: flex-end; height: 44px; width: 44px; padding: 0; display: grid; place-items: center; }
+.attach-btn svg { width: 18px; height: 18px; }
+.bubble .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.bubble .thumbs img { max-width: 180px; max-height: 140px; border-radius: 8px; border: 1px solid var(--line); display: block; }
+.bubble .files { display: grid; gap: 3px; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .empty-chat { margin: auto; text-align: center; color: var(--faint); display: grid; gap: 8px; place-items: center; }
 .empty-chat svg { width: 38px; height: 38px; color: var(--accent); opacity: 0.8; }
 

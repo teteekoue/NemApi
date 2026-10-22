@@ -30,6 +30,7 @@ class Feature:
     label: str
     description: str
     default: bool = True
+    tag: str = ""  # short chip shown on the agent card (what it brings)
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class AgentProfile:
     user_agents: Tuple[str, ...] = ()  # User-Agent prefixes (case-insensitive)
     prompt_markers: Tuple[str, ...] = ()  # substrings of the agent's system prompt
     homepage: str = ""
+    snippet: str = ""  # ready-to-copy configuration; {base} is the NemApi base URL
 
     def detect(self, headers: Mapping[str, str], messages: Sequence[Any]) -> Optional[str]:
         """How this request was recognised as coming from the agent, or None."""
@@ -53,11 +55,17 @@ class AgentProfile:
         if any(ua.startswith(p.lower()) for p in self.user_agents):
             return "User-Agent"
         if self.prompt_markers:
-            for m in messages[:3]:
-                if isinstance(m, dict) and m.get("role") in ("system", "developer"):
-                    text = _text(m.get("content"))
-                    if any(marker in text for marker in self.prompt_markers):
-                        return "prompt système"
+            for i, m in enumerate(messages[:3]):
+                if not isinstance(m, dict):
+                    continue
+                # An agent that merges its system prompt into the first user
+                # message (Nemesis does) must still be recognised: the first
+                # message is scanned whatever its role.
+                if i and m.get("role") not in ("system", "developer"):
+                    continue
+                text = _text(m.get("content"))
+                if any(marker in text for marker in self.prompt_markers):
+                    return "prompt système" if m.get("role") in ("system", "developer") else "prompt de l'agent"
         return None
 
 
@@ -85,6 +93,12 @@ QWEN_CODE = AgentProfile(
     ),
     user_agents=("QwenCode/",),
     prompt_markers=("You are Qwen Code",),
+    snippet=(
+        'export OPENAI_BASE_URL="{base}"\n'
+        'export OPENAI_API_KEY="nemapi"       # ta clé NemApi si la protection est active\n'
+        'export OPENAI_MODEL="deepseek-chat"  # ou qwen-chat, claude-chat, gemini-chat…\n'
+        "qwen"
+    ),
     features=(
         Feature(
             "incremental_context",
@@ -92,6 +106,7 @@ QWEN_CODE = AgentProfile(
             "Une seule discussion web, jamais de nouveau chat : la 1re requête envoie tout (prompt système, "
             "outils, message), ensuite seuls les messages absents de la discussion sont tapés. Les doublons "
             "sont filtrés.",
+            tag="contexte",
         ),
         Feature(
             "side_queries_local",
@@ -99,23 +114,75 @@ QWEN_CODE = AgentProfile(
             "Les requêtes d'arrière-plan de l'agent (sous-agent mémoire, suggestions de saisie, requêtes "
             "structurées respond_in_schema) reçoivent une réponse neutre immédiate, sans rien taper. Le "
             "classifieur de sécurité est refusé : l'agent te demande alors ton approbation.",
+            tag="local",
         ),
         Feature(
             "continuation",
             "Suite automatique des réponses coupées",
             "Si la réponse s'arrête au milieu d'un appel d'outil (gros fichier), NemApi demande la suite dans "
             "la même discussion et recolle les morceaux avant de répondre à l'agent.",
+            tag="fichiers longs",
         ),
         Feature(
             "keepalive",
             "Connexion maintenue pendant les longues réponses",
             "En streaming, l'agent reçoit tout de suite les en-têtes puis un signal toutes les 15 s : il "
             "n'abandonne pas une réponse qui prend plusieurs minutes.",
+            tag="réseau",
         ),
     ),
 )
 
-AGENTS: Tuple[AgentProfile, ...] = (QWEN_CODE,)
+NEMESIS = AgentProfile(
+    id="nemesis",
+    name="Nemesis",
+    vendor="teteekoue · NEMESIS-AGENT",
+    homepage="https://github.com/teteekoue/NEMESIS-AGENT",
+    description=(
+        "Agent de code en ligne de commande. Il n'envoie que le message courant (son contexte est "
+        "géré de son côté) et ses appels d'outils sont écrits en JSON dans un bloc de code."
+    ),
+    setup=(
+        "Dans le config.yaml de NEMESIS : section « nemapi » (host 127.0.0.1, port 8090, model "
+        "deepseek-chat). NemApi reconnaît l'agent via l'en-tête X-NemApi-Agent: nemesis, ou via son "
+        "prompt système."
+    ),
+    user_agents=("nemesis-agent", "nemesis-cli", "nemesis/"),
+    # The canonical runtime prompt (NEMESIS-AGENT/src/core/system_prompt.py)
+    # opens with « You are **NEMESIS** »; prompt_system.txt is the older
+    # fallback wording.
+    prompt_markers=("You are **NEMESIS**", "NEMESIS Runtime Prompt", "NEMESIS is a reliable engineering agent"),
+    snippet=(
+        "# config.yaml de NEMESIS\n"
+        "provider:\n"
+        "  type: nemapi\n"
+        "  model: deepseek-chat\n"
+        "\n"
+        "nemapi:\n"
+        '  url: "{base}"\n'
+        "  # token: nemapi-token…   # si la protection API est active"
+    ),
+    features=(
+        Feature(
+            "persistent_chat",
+            "Discussion unique",
+            "La requête ne déclenche jamais l'ouverture d'une nouvelle discussion : l'URL du chat web "
+            "reste la même et l'agent continue dans la discussion ouverte. C'est le pendant de "
+            "« Nouvelle discussion à chaque requête » du mode classique.",
+            tag="discussion",
+        ),
+        Feature(
+            "native_tool_calls",
+            "Appels d'outils natifs",
+            "Les appels d'outils écrits par l'agent (JSON dans un bloc ```json) sont renvoyés au format "
+            "OpenAI tool_calls au lieu de rester dans le texte. Le contrat d'outils de l'agent n'est pas "
+            "réécrit par NemApi : c'est l'agent qui décide du format.",
+            tag="outils",
+        ),
+    ),
+)
+
+AGENTS: Tuple[AgentProfile, ...] = (QWEN_CODE, NEMESIS)
 AGENTS_BY_ID: Dict[str, AgentProfile] = {a.id: a for a in AGENTS}
 
 
@@ -248,10 +315,11 @@ class IntegrationManager:
                 "homepage": a.homepage,
                 "description": a.description,
                 "setup": a.setup,
+                "snippet": a.snippet,
                 "enabled": st["enabled"],
                 "features": [
                     {"id": f.id, "label": f.label, "description": f.description, "default": f.default,
-                     "enabled": st["features"][f.id]}
+                     "enabled": st["features"][f.id], "tag": f.tag}
                     for f in a.features
                 ],
                 "detected": {

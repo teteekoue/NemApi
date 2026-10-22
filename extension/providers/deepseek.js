@@ -54,6 +54,131 @@
   const SEND_SVG_PATH_RE =
     /M8\.3125|M13\.12\s*19\.98|M12\s*5\.25|paper|send|arrow/i;
 
+  // File input: one hidden <input type=file multiple> living next to the
+  // attach button (div.bf38813a). Probed on chat.deepseek.com (Oct 2026): it is
+  // present as soon as the composer renders, no click on the button needed.
+  const FILE_INPUT = [
+    "input[type='file']",
+    "input[accept*='image/']",
+    "input[accept*='.png']",
+  ];
+
+  function findFileInput() {
+    return B.queryFirst(FILE_INPUT);
+  }
+
+  /**
+   * Did the page take the files?
+   *
+   * The file input is the ONLY reliable witness: its `files` list is filled
+   * by the browser itself. Guessing the class of the preview (blob: img,
+   * ds-animated-size-item, …) is what broke: the preview does not match
+   * those names, the code concluded "no attachment", the prompt was typed
+   * DURING the upload and was wiped by the re-render that ends it.
+   */
+  function filesAccepted() {
+    const input = findFileInput();
+    if (!input) return false;
+    try {
+      return !!(input.files && input.files.length);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Is an attachment present in the composer? (any media next to the input) */
+  function hasAttachment() {
+    if (filesAccepted()) return true;
+    return attachmentShown();
+  }
+
+  /**
+   * Does the page SHOW an attachment next to the composer?
+   *
+   * The DOM witness (a thumbnail, a canvas, the attachment chip). Unlike
+   * `filesAccepted()` it does NOT look at the file input: we fill that one
+   * ourselves, so it proves nothing about the app.
+   */
+  function attachmentShown() {
+    try {
+      const el = findInput();
+      const root = el ? el.parentElement : null;
+      const scope = root || document.body;
+      return !!scope.querySelector(
+        "img[src^='blob:'], img[src^='data:image'], canvas, [class*='attachment'], [class*='upload']"
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Attach files (images or documents) to the next message.
+   * `files` are File/Blob objects built by the content script from the API's
+   * image_url parts. Returns the number of files the page accepted.
+   */
+  async function attachFiles(files) {
+    const input = findFileInput();
+    if (!input) throw new Error("DeepSeek: file input not found");
+    const list = Array.from(files || []);
+    if (!list.length) return 0;
+    // baseline: the previews already on the page (a new one proves the upload
+    // was accepted even when the page sets no usable alt on the thumbnail)
+    const baseline = document.querySelectorAll("img[src^='blob:'], img[src^='data:image']").length;
+    const accepted = await B.attachFiles(input, list);
+    // The page must SHOW that it took the file. Filling `input.files` from
+    // JS is NOT a proof — we did it ourselves — so an app that ignores the
+    // dispatched events would leave the image nowhere and the request would
+    // send a prompt whose image is silently missing.
+    const settled = await B.waitUploadFinished(list, {
+      inputs: FILE_INPUT,
+      baseline,
+      probe: attachmentShown,
+      timeout: 30000,
+    });
+    if (!settled) {
+      throw new Error(
+        "DeepSeek: attachment not accepted (check the file type/size; the UI shows an error next to the composer)"
+      );
+    }
+    return accepted;
+  }
+
+  /** Is an upload still running (spinner on the attachment chip)? */
+  function uploading() {
+    try {
+      const chip = document.querySelector(
+        "[class*='ds-animated-size-item'], [class*='_6d1b417']"
+      );
+      if (!chip) return false;
+      return !!chip.querySelector(".ds-loading, [class*='loading'], [class*='spinner']");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Wait until the page has taken the files.
+   *
+   * The file input is the only reliable witness: the browser fills its
+   * `files` list. We do NOT wait for the DOM to be quiet: a page that
+   * updates a counter or a spinner keeps mutating forever, and waiting for
+   * a quiet DOM cost up to 90 s for nothing. The upload that is still
+   * running is handled by the write/retry loop, which rewrites the prompt
+   * as long as the app wipes it.
+   */
+  async function waitUploadSettled(timeoutMs) {
+    if (!filesAccepted() && !hasAttachment()) return true;
+    const t0 = Date.now();
+    const budget = Math.min(timeoutMs || 15000, 20000);
+    while (Date.now() - t0 < budget) {
+      if (filesAccepted()) return true;
+      await B.sleep(150);
+    }
+    log(`the page did not take the files within ${budget}ms`);
+    return filesAccepted();
+  }
+
   function getMessageEls() {
     for (const s of MESSAGE) {
       const nodes = document.querySelectorAll(s);
@@ -258,7 +383,51 @@
     return fromDom || "";
   }
 
+  /**
+   * The editable surfaces of the composer, best candidate first.
+   *
+   * DeepSeek does not always use the same widget: the current build drives a
+   * rich-text editor (contenteditable, Lexical — `role="textbox"`), the
+   * previous ones a plain textarea. Writing into the wrong one is silent:
+   * the text goes nowhere, the send control stays disabled and the message
+   * is never sent. The caller therefore tries them in turn and keeps the one
+   * that really enables the send control.
+   */
+  function inputCandidates() {
+    const out = [];
+    const seen = new Set();
+    const order = [
+      "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true']",
+      "textarea#chat-input",
+      'textarea[placeholder*="DeepSeek" i]',
+      'textarea[placeholder*="Message" i]',
+      "textarea[role='textbox']",
+      ".ds-textarea textarea",
+      "textarea[data-testid*='chat' i]",
+      "textarea",
+    ];
+    for (const sel of order) {
+      let els = [];
+      try {
+        els = Array.from(document.querySelectorAll(sel));
+      } catch (_) {
+        continue;
+      }
+      for (const el of els) {
+        if (seen.has(el)) continue;
+        if (!isVisible(el)) continue;
+        if (el.disabled || el.readOnly) continue;
+        seen.add(el);
+        out.push(el);
+      }
+    }
+    return out;
+  }
+
   function findInput() {
+    const cands = inputCandidates();
+    if (cands.length) return cands[0];
     return B.queryFirst(INPUT);
   }
 
@@ -388,78 +557,204 @@
     }
   }
 
-  function isGenerating() {
-    // Prefer explicit Stop button
-    const stop =
-      document.querySelector('button[aria-label*="Stop" i]') ||
-      document.querySelector('[role="button"][aria-label*="Stop" i]') ||
-      document.querySelector('[class*="stop"]');
-    if (stop && isVisible(stop)) return true;
+  /**
+   * Cheap activity signature: the number of answers and the RAW size of the
+   * last one. getLastResponse() rebuilds the whole markdown and is far too
+   * heavy to call every 800 ms while waiting for the page to be idle.
+   */
+  function getActivitySignature() {
+    try {
+      const els = getMessageEls();
+      const last = els.length ? els[els.length - 1] : null;
+      const raw = last ? String(last.innerText || last.textContent || "") : "";
+      return els.length + ":" + raw.length;
+    } catch (_) {
+      return "0:0";
+    }
+  }
 
-    // Loading indicators
-    if (
-      document.querySelector(".ds-loading, [class*='loading'], [class*='spinner']")
-    ) {
-      return true;
+  /**
+   * Is the model currently streaming?
+   *
+   * Kept deliberately STRICT: a false positive here is not free. The proxy
+   * only accepts a stable answer once the provider is idle, and a stuck
+   * "Stop" indicator delays every request by the whole `busyStuckMs` window
+   * (and the NEXT job too, while it waits for the page to be idle). A
+   * page-wide `[class*="loading"]` match hits any element of the page (a
+   * skeleton, a lazy image) and permanently "keeps the page busy".
+   */
+  function isGenerating() {
+    // 1) the Stop button, by label PREFIX (a plain substring match also
+    //    catches unrelated elements whose class contains "stop")
+    const stops = document.querySelectorAll(
+      'button[aria-label^="Stop" i], [role="button"][aria-label^="Stop" i],' +
+        'button[title^="Stop" i], [aria-label^="停止" i], [aria-label^="Stop generating" i]'
+    );
+    for (const el of stops) {
+      if (isVisible(el)) return true;
+    }
+    // 2) a spinner INSIDE the last answer or the composer (not anywhere on
+    //    the page: the page has plenty of "loading" elements that are not
+    //    the model thinking)
+    const els = getMessageEls();
+    const scope = els.length ? els[els.length - 1] : findComposerRoot(findInput());
+    if (scope && scope.querySelector) {
+      const spin = scope.querySelector(
+        ".ds-loading, [aria-busy='true'], [class*='stop-generating']"
+      );
+      if (spin && isVisible(spin)) return true;
     }
     return false;
   }
 
-  async function sendPrompt(text) {
-    const input =
-      findInput() || (await B.waitFor(INPUT[0], 12000).catch(() => null));
-    if (!input) throw new Error("DeepSeek: input not found");
-
-    // Ensure focus and clear any residual selection
+  function log(msg) {
     try {
-      input.focus();
-      input.click();
+      console.log("[NemApi/deepseek] " + msg);
     } catch (_) {}
+  }
 
-    B.pasteText(input, text);
+  /** Current text really held by the composer (React/Lexical controlled). */
+  function editorText(el) {
+    if (!el) return "";
+    if (B.editorText) return B.editorText(el);
+    return String(el.value != null ? el.value : el.textContent || "");
+  }
 
-    // Extra events some React builds need after the 2nd/3rd message
-    try {
-      input.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          cancelable: true,
-          inputType: "insertFromPaste",
-          data: String(text ?? ""),
-        })
-      );
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    } catch (_) {}
+  /**
+   * Does the composer really hold the text we want to send?
+   *
+   * The DOM value is not enough: the app keeps its own state and rewrites
+   * the DOM on the next render, so a write it ignored leaves a field that
+   * looks filled and is emptied a moment later (the image stays, the text
+   * vanishes). The value the app holds is read through the page bridge.
+   */
+  function composerHolds(want, el) {
+    const target = el || findInput();
+    if (!target) return false;
+    const dom = editorText(target);
+    if (!B.textMatches(dom, want)) return false;
+    const react = B.readReactValue(target);
+    return react === null || B.textMatches(react, want);
+  }
 
-    // Give React time to enable the send control (critical on later turns)
-    await B.sleep(220);
-
-    let btn = await waitForEnabledSend(input, 3500);
-
-    if (btn && !isDisabled(btn)) {
-      // Prefer a trusted-looking click sequence
-      try {
-        btn.focus();
-      } catch (_) {}
-      const clicked = B.clickEl(btn);
-      if (clicked) {
-        // Verify that the input was cleared (message accepted) within a short window
-        await B.sleep(350);
-        const stillFull =
-          (input.value || input.textContent || "").trim().length >
-          Math.min(20, String(text).length * 0.6);
-        if (!stillFull) return; // success
+  /**
+   * Write the prompt into a candidate editor and PROVE the app took it.
+   *
+   * The proof is the send control: DeepSeek enables it only when the
+   * composer really holds the text. The DOM value alone is not proof (a
+   * rich-text editor keeps the text in its own state, and a field the app
+   * ignored is emptied at the next render).
+   *
+   * While an upload is running, the app wipes the prompt at the end of it.
+   * The write is therefore repeated until it SURVIVES: the loop ends when
+   * the send control is usable AND the text is still there a moment later.
+   *
+   * Returns {input, btn} on success, null when this editor never took the
+   * text — the caller then tries the next candidate.
+   */
+  async function typePrompt(text, el) {
+    const want = String(text || "").trim();
+    const target = el || findInput();
+    if (!target) return null;
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      const written = await B.writeAndConfirm(() => target, text, {
+        attempts: 2,
+        log: (m) => log(m),
+      });
+      if (!written) {
+        await B.sleep(250);
+        continue;
       }
+      const btn = await waitForEnabledSend(written, 2500);
+      if (!btn || isDisabled(btn) || !isVisible(btn)) {
+        log(`attempt ${attempt}: the send control stayed disabled (the app wiped the text)`);
+        await B.sleep(250);
+        continue;
+      }
+      // the app took it — make sure it is not wiped a moment later
+      await B.sleep(700);
+      if (!composerHolds(want, written)) {
+        log(`attempt ${attempt}: the text was wiped after being accepted, retrying`);
+        continue;
+      }
+      log(`editor holds ${editorText(written).length}c (want ${want.length}c) → send enabled`);
+      return { input: written, btn };
+    }
+    return null;
+  }
+
+  async function sendPrompt(text) {
+    const want = String(text || "").trim();
+
+    // 1) The upload must be OVER before anything is typed: a prompt written
+    //    while the page still re-renders is wiped by the app (the image
+    //    stays, the text disappears).
+    await waitUploadSettled();
+
+    // 2) Write the prompt, trying every candidate editor: the current
+    //    DeepSeek build drives a rich-text editor, the previous ones a
+    //    textarea, and writing into the wrong one is silent.
+    const cands = inputCandidates();
+    if (!cands.length) throw new Error("DeepSeek: composer not found");
+    let input = null;
+    let btn = null;
+    for (const el of cands.slice(0, 3)) {
+      const res = await typePrompt(text, el);
+      if (res) {
+        input = res.input;
+        btn = res.btn;
+        break;
+      }
+      log("this editor did not take the text → trying the next one");
+      try {
+        B.setTextareaValue(el, "");
+      } catch (_) {}
+    }
+    if (!input || !btn) {
+      throw new Error(
+        "DeepSeek: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
+    }
+
+    // 3) Click the send control.
+    try {
+      btn.focus();
+    } catch (_) {}
+    if (B.clickEl(btn)) {
+      // Verify that the message was accepted (the composer is cleared)
+      await B.sleep(400);
+      if (!want || !composerHolds(want, input)) return; // success
     }
 
     // Fallback 1: native Enter (works when "Enter to send" is enabled)
     B.pressEnter(input);
-    await B.sleep(250);
+    await B.sleep(300);
+    if (!want || !composerHolds(want, input)) return;
 
-    // Fallback 2: try clicking again after Enter attempt
-    btn = findSend(input);
-    if (btn && !isDisabled(btn)) {
-      B.clickEl(btn);
+    // Fallback 2: try clicking again after the Enter attempt
+    const again = findSend(input);
+    if (again && !isDisabled(again)) {
+      B.clickEl(again);
+    }
+  }
+
+  /**
+   * Cheap text read: the RAW text of the answer, without the markdown
+   * conversion. Used for the polling (a change signal is enough), so the
+   * expensive DOM clone + markdown conversion runs only once, at the end.
+   */
+  function readCheapText(msgEl) {
+    if (!msgEl) return "";
+    try {
+      const main =
+        msgEl.querySelector(".ds-assistant-message-main-content") ||
+        msgEl.querySelector("[class*='assistant-message-main']") ||
+        msgEl.querySelector(".ds-markdown") ||
+        msgEl.querySelector("[class*='markdown']");
+      const node = main || msgEl;
+      return String(node.innerText || node.textContent || "");
+    } catch (_) {
+      return "";
     }
   }
 
@@ -472,7 +767,7 @@
       if (isGenerating()) break;
       if (prevCount && getResponseCount() > prevCount) break;
       const els = getMessageEls();
-      const last = els.length ? readMessageText(els[els.length - 1]) : "";
+      const last = els.length ? readCheapText(els[els.length - 1]) : "";
       if (last && last !== previous && last.length > (previous || "").length) {
         break;
       }
@@ -484,6 +779,7 @@
       stableMs: 1600,
       previous: prevCount && getResponseCount() > prevCount ? "" : previous,
       newElTimeout: 20000,
+      readCheap: readCheapText,
     });
 
     // Brief settle for virtual-list re-render (keep short for speed)
@@ -509,7 +805,11 @@
     getLastResponse,
     extractPremium, // final read of an answer (exported for tests)
     getResponseCount,
+    getActivitySignature,
     isGenerating,
     findInput,
+    findFileInput,
+    attachFiles,
+    uploading,
   };
 })(typeof window !== "undefined" ? window : self);

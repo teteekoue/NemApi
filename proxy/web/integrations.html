@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Intégration agents IA</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.0.0">
+<link rel="stylesheet" href="/admin.css?v=5.2.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="integrations" data-title="Intégration agents IA">
@@ -17,18 +17,20 @@
       <div class="page-head">
         <div>
           <h1>Intégration agents IA</h1>
-          <div class="sub">Rends NemApi compatible avec le système de contexte de tes agents de code.
-            Tant qu'une intégration est désactivée, NemApi garde son <b>comportement classique</b> : chaque requête est tapée en entier dans le chat web.</div>
+          <div class="sub">Chaque agent de code a son mode : une seule discussion web, un contexte, des appels
+            d'outils. Tant qu'une intégration est <b>désactivée</b>, NemApi garde son <b>comportement classique</b> :
+            la requête entière est tapée dans le chat web, à chaque fois.</div>
         </div>
       </div>
 
       <div class="callout mb" id="how-it-works">
         <span id="how-ico"></span>
-        <div>NemApi reconnaît l'agent à <b>chaque requête</b> (User-Agent, en-tête <code>X-NemApi-Agent</code> ou prompt système).
-          Une intégration activée ne s'applique qu'aux requêtes de son agent : les autres clients (Chat test, scripts, autres outils) restent en mode classique.</div>
+        <div>NemApi reconnaît l'agent à <b>chaque requête</b> (en-tête <code>X-NemApi-Agent</code>, User-Agent ou
+          prompt système). Une intégration activée ne s'applique qu'aux requêtes de <b>son</b> agent : les autres
+          clients (Chat test, scripts, autres outils) restent en mode classique.</div>
       </div>
 
-      <div id="agents" class="stack mb"><div class="card"><div class="skeleton" style="height:120px"></div></div></div>
+      <div id="agents" class="agents-grid mb"><div class="card"><div class="skeleton" style="height:220px"></div></div></div>
 
       <div class="grid g2">
         <div class="card">
@@ -40,16 +42,18 @@
         </div>
         <div class="card">
           <div class="card-head"><div><h3 id="h-more">Autres agents</h3><p class="desc">La liste s'agrandira au fil des versions.</p></div></div>
-          <p class="muted" style="margin:0 0 10px">Chaque nouvel agent (Cline, Claude Code, Codex CLI, Aider…) aura sa propre intégration, <b>désactivée par défaut</b>.</p>
-          <p class="muted small" style="margin:0">En attendant, un agent non listé fonctionne en mode classique : active « Nouvelle discussion à chaque requête » dans
-            <a href="/config">Configuration</a> pour éviter que le contexte s'empile dans le chat web.</p>
+          <p class="muted" style="margin:0 0 10px">Chaque nouvel agent (Cline, Claude Code, Codex CLI, Aider…) aura sa
+            propre intégration, <b>désactivée par défaut</b>.</p>
+          <p class="muted small" style="margin:0">En attendant, un agent non listé fonctionne en mode classique : active
+            « Nouvelle discussion à chaque requête » dans <a href="/config">Configuration</a> pour éviter que le
+            contexte s'empile dans le chat web.</p>
         </div>
       </div>
     </main>
   </div>
 </div>
 
-<script src="/admin.js?v=5.0.0"></script>
+<script src="/admin.js?v=5.2.0"></script>
 <script>
 "use strict";
 $("how-ico").outerHTML = icon("info", "");
@@ -63,15 +67,16 @@ function initials(name) {
   return name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 }
 
-function setupSnippet(agent) {
-  if (agent.id === "qwen-code") {
-    return `export OPENAI_BASE_URL="${base}"\nexport OPENAI_API_KEY="nemapi"      # ta clé NemApi si la protection est active\nexport OPENAI_MODEL="deepseek-chat"  # ou qwen-chat, claude-chat, gemini-chat…\nqwen`;
-  }
-  return `OPENAI_BASE_URL=${base}`;
+/** The ready-to-copy configuration of an agent ({base} = the NemApi base URL). */
+function snippetOf(agent) {
+  const raw = agent.snippet || `${base}`;
+  return raw.replaceAll("{base}", base);
 }
 
 function agentCard(a) {
   const id = esc(a.id);
+  const chips = a.features.map((f) =>
+    `<span class="chip" data-chip="${esc(f.id)}" title="${esc(f.label)}">${esc(f.tag || f.label)}</span>`).join("");
   return `<section class="card agent-card" data-agent="${id}">
     <div class="agent-top">
       <div class="agent-logo">${esc(initials(a.name))}</div>
@@ -79,6 +84,7 @@ function agentCard(a) {
         <h2>${esc(a.name)} <span class="badge" id="int-${id}-badge">Désactivée</span></h2>
         <div class="vendor">${esc(a.vendor)}${a.homepage ? ` · <a href="${esc(a.homepage)}" target="_blank" rel="noopener">${esc(a.homepage.replace(/^https?:\/\//, ""))}</a>` : ""}</div>
         <p>${esc(a.description)}</p>
+        <div class="agent-chips">${chips}</div>
       </div>
       <div class="agent-toggle">
         <label class="switch lg" title="Activer l'intégration ${esc(a.name)}"><input type="checkbox" id="int-${id}-enabled"><span class="slider"></span></label>
@@ -87,7 +93,7 @@ function agentCard(a) {
     </div>
     <div class="agent-detect"><i class="dot" id="int-${id}-dot"></i><span id="int-${id}-detect">—</span></div>
     <div class="agent-body">
-      <div class="section-title">Fonctions de l'intégration</div>
+      <div class="section-title">Ce que l'intégration change</div>
       <div class="features" id="int-${id}-features">
         ${a.features.map((f) => `<div class="setting" data-feature="${esc(f.id)}">
           <div><div class="s-title">${esc(f.label)}</div><div class="s-desc">${esc(f.description)}</div>
@@ -99,8 +105,8 @@ function agentCard(a) {
       </div>
       <div class="section-title">Configurer ${esc(a.name)}</div>
       <p class="muted small" style="margin:4px 0 10px">${esc(a.setup)}</p>
-      <div class="copy-box"><code id="int-${id}-snippet-line">${esc(base)}</code><button class="btn btn-sm" type="button" data-copy="${esc(base)}">Copier l'URL</button></div>
-      <pre class="session-box mono" style="white-space:pre-wrap;margin-top:10px" id="int-${id}-snippet">${esc(setupSnippet(a))}</pre>
+      <div class="copy-box"><code id="int-${id}-url">${esc(base)}</code><button class="btn btn-sm" type="button" data-copy="${esc(base)}">Copier l'URL</button></div>
+      <pre class="session-box mono" style="white-space:pre-wrap;margin-top:10px" id="int-${id}-snippet">${esc(snippetOf(a))}</pre>
       <button class="btn btn-sm" type="button" data-copy-snippet="${id}">${icon("copy", "")}Copier la configuration</button>
     </div>
   </section>`;
@@ -126,6 +132,11 @@ function updateAgent(a, sessions) {
     if (!box.dataset.busy) box.checked = f.enabled;
     box.disabled = !a.enabled || !!box.dataset.busy;
     box.closest(".setting").classList.toggle("disabled", !a.enabled);
+    // the chip shows at a glance what the integration brings, and whether it is on
+    const chip = document.querySelector(`[data-chip="${f.id}"]`);
+    if (chip) {
+      chip.className = "chip " + (a.enabled && f.enabled ? "on" : "off");
+    }
   }
   const d = a.detected || {};
   const dot = $(`int-${id}-dot`);

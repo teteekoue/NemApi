@@ -202,6 +202,7 @@ class Plan:
     new_tools: List[str] = field(default_factory=list)
     lane: Optional[str] = None  # None = main conversation, else side lane id
     force_side: bool = False  # known side query of the agent (typed as a side request)
+    generic_tools: bool = False  # the agent brings its own tool dialect (no tool list)
 
 
 @dataclass
@@ -210,15 +211,16 @@ class Parsed:
     tool_calls: List[Dict[str, Any]]
 
 
-def postprocess(raw: str, names: Optional[List[str]], tools: Optional[List[Any]] = None) -> Parsed:
+def postprocess(raw: str, names: Optional[List[str]], tools: Optional[List[Any]] = None,
+                generic: bool = False) -> Parsed:
     text = clean_assistant_text(raw or "")
     cut = find_truncated_call(text)
     if cut is not None:
         # a tool call that never ended (output limit): executing a "repaired"
         # version would write a truncated file and report success — never
-        remaining, calls = parse_tool_calls(text[:cut], names or None, tools)
+        remaining, calls = parse_tool_calls(text[:cut], names or None, tools, generic=generic)
         return Parsed((remaining + "\n\n" + NOTE_NOT_EXECUTED).strip(), calls)
-    remaining, calls = parse_tool_calls(text, names or None, tools)
+    remaining, calls = parse_tool_calls(text, names or None, tools, generic=generic)
     return Parsed(remaining, calls)
 
 
@@ -263,7 +265,7 @@ class SessionManager:
 
     # ------------------------------------------------------------ planning
     def plan(self, provider: str, messages, tools, full_prompt: str, tool_names: List[str],
-             force_side: bool = False) -> Plan:
+             force_side: bool = False, generic_tools: bool = False) -> Plan:
         return Plan(
             provider=provider,
             history=History.from_messages(messages),
@@ -271,6 +273,7 @@ class SessionManager:
             tool_names=list(tool_names or []),
             full_prompt=full_prompt,
             force_side=force_side,
+            generic_tools=generic_tools,
         )
 
     # ------------------------------------------------------------ dispatch
@@ -489,7 +492,7 @@ class SessionManager:
         lane = self._lane_for(sess, plan)
 
         if job.status == "done":
-            parsed = postprocess(job.result, plan.tool_names, plan.tools)
+            parsed = postprocess(job.result, plan.tool_names, plan.tools, generic=plan.generic_tools)
             job.parsed = parsed
             if plan.mode != "cached":
                 self._record_typed(sess, plan)
@@ -559,7 +562,7 @@ class SessionManager:
         lane = self._lane_for(sess, plan)
         if not (lane.awaiting if lane is not None else sess.awaiting):
             return
-        parsed = postprocess(raw, plan.tool_names, plan.tools)
+        parsed = postprocess(raw, plan.tool_names, plan.tools, generic=plan.generic_tools)
         self._record_answer(sess, plan, raw, parsed, lane)
         if lane is not None:
             lane.turns += 1

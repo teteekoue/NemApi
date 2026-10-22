@@ -38,18 +38,84 @@
     ".markdown",
   ];
 
+  // Image upload — the manifest covers THREE different sites and they do NOT
+  // share a front-end:
+  //
+  //  - chat.z.ai (international): a hidden `input[type=file][multiple]` in
+  //    `div.messageInputContainer`, and a "More" button
+  //    `button#upload-file-button` (aria-label="More", a "+" icon) that opens
+  //    the upload menu (live DOM capture, tamga 2026-10-18).
+  //  - chatglm.cn (智谱清言): a DIFFERENT app (Element-Plus upload). Its
+  //    input is `.upload-demo input.el-upload__input[type=file]` — the
+  //    `.img-input` entry is a dead legacy one and the avatar menu has a
+  //    file input of its own, so the selector must stay scoped to the
+  //    composer.
+  //  - bigmodel.cn: the open platform, no chat UI — nothing to automate.
+  //
+  // The bare "input[type=file]" fallback is therefore NOT used here: on
+  // chatglm.cn it would land on the avatar's input.
+  const FILE_INPUT_CHATZ = [
+    ".messageInputContainer input[type='file']",
+    "input[type='file'][multiple][accept*='.png']",
+    "input[type='file'][multiple]:not([capture])",
+  ];
+  const FILE_INPUT_CHATGLM = [
+    ".upload-demo input.el-upload__input[type='file']",
+    ".upload-demo input[type='file']",
+  ];
+  const ATTACH = [
+    "button#upload-file-button",
+    'button[aria-label*="More" i]',
+  ];
+
+  function fileInputs() {
+    let host = "";
+    try {
+      host = String(location.hostname || "");
+    } catch (_) {}
+    if (/chatglm\.cn/i.test(host)) return FILE_INPUT_CHATGLM;
+    return FILE_INPUT_CHATZ;
+  }
+
+  async function attachFiles(files) {
+    return B.attachFilesToPage(files, {
+      inputs: fileInputs(),
+      openAttach: ATTACH,
+      pasteTarget: INPUT,
+      name: "Z.ai",
+    });
+  }
+
   function findInput() {
     return B.queryFirst(INPUT);
   }
 
-  function findSend() {
-    const root = B.findComposerRoot();
+  /** The editable surfaces of the composer, best candidate first. */
+  function inputCandidates() {
+    return B.inputCandidatesFrom(INPUT);
+  }
+
+  function log(msg) {
+    try {
+      console.log("[NemApi/zai] " + msg);
+    } catch (_) {}
+  }
+
+  /**
+   * The send control, anchored on the composer we just wrote into.
+   *
+   * `input` is the surface we wrote to: anchoring the search on it avoids
+   * picking a send button that belongs to another part of the page.
+   */
+  function findSend(input) {
+    const root = B.findComposerRoot(input);
     for (const s of SEND) {
       const nodes = root.querySelectorAll(s);
       for (const el of nodes) {
         if (!el || !B.isVisible(el)) continue;
-        if (B.isDisabled && B.isDisabled(el)) continue;
-        if (el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        // the DISABLED state is NOT filtered here: the caller is the one
+        // waiting for the button to become usable, and filtering it means
+        // never finding it at all.
         const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.id || ""}`.toLowerCase();
         if (/stop|cancel|attach|upload|file|mic|voice/.test(label)) continue;
         return el;
@@ -241,45 +307,47 @@
     }
   }
 
+  /**
+   * Is the model currently streaming?
+   *
+   * Kept deliberately STRICT: a false positive here is not free. The proxy
+   * only accepts a stable answer once the provider is idle, and a stuck
+   * "generating" indicator delays every request (the answer is there, the
+   * proxy just never returns it). A page-wide `[class*='stop']` match hits any
+   * element whose class contains "stop" and keeps the page busy forever.
+   */
   function isGenerating() {
-    return !!(
-      document.querySelector('button[aria-label*="Stop" i]') ||
-      document.querySelector('button[aria-label*="停止"]') ||
-      document.querySelector("[class*='stop'], [class*='streaming'], [class*='generating']")
+    const stops = document.querySelectorAll(
+      'button[aria-label^="Stop" i], [role="button"][aria-label^="Stop" i],' +
+        'button[title^="Stop" i], [aria-label^="停止" i]'
     );
+    for (const el of stops) {
+      if (B.isVisible(el)) return true;
+    }
+    // a spinner inside the composer or the last answer, not anywhere on the page
+    const scope = findComposerRoot(findInput());
+    if (scope && scope.querySelector) {
+      const spin = scope.querySelector(
+        "[class*='streaming'], [class*='generating'], [class*='stop-generating'], [aria-busy='true']"
+      );
+      if (spin && B.isVisible(spin)) return true;
+    }
+    return false;
   }
 
   async function sendPrompt(text) {
-    let input = findInput();
-    if (!input) {
-      try {
-        input = await B.waitFor("#chat-input, textarea", 12000);
-      } catch (_) {
-        throw new Error("Z.ai: input not found");
-      }
+    const res = await B.sendWithProof({
+      inputCandidates,
+      findSend,
+      text,
+      log: (m) => log(m),
+    });
+    if (!res) {
+      throw new Error(
+        "Z.ai: the prompt could not be written into the composer (the page keeps clearing it)"
+      );
     }
-    try {
-      input.focus();
-      input.click();
-    } catch (_) {}
-    B.pasteText(input, text);
-    await B.sleep(220);
-    let btn = B.waitForEnabledSend
-      ? await B.waitForEnabledSend(findSend, 4000)
-      : findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) {
-      try {
-        btn.focus();
-      } catch (_) {}
-      if (B.clickEl(btn)) {
-        await B.sleep(300);
-        return;
-      }
-    }
-    B.pressEnter(input);
-    await B.sleep(150);
-    btn = findSend();
-    if (btn && !(B.isDisabled && B.isDisabled(btn))) B.clickEl(btn);
+    await B.clickSend({ input: res.input, btn: res.btn, findSend, text, log: (m) => log(m) });
   }
 
   async function waitForResponse(previous = "", prevCount = 0) {
@@ -318,6 +386,7 @@
     id: "zai",
     match: (url) => /chat\.z\.ai|z\.ai\/chat|chatglm\.cn|bigmodel\.cn/i.test(url),
     sendPrompt,
+    attachFiles,
     waitForResponse,
     getLastResponse,
     getResponseCount,

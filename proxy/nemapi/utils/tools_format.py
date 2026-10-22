@@ -181,12 +181,32 @@ def clean_assistant_text(text: str) -> str:
     return t.strip()
 
 
+# Parts that are NOT text and must never be stringified into the prompt:
+# a base64 data URL is several megabytes of noise, and the image itself is
+# uploaded through the provider's file input instead.
+_BINARY_PART_TYPES = ("image_url", "input_image", "image", "file", "input_file", "audio", "input_audio")
+
+
+def _is_binary_part(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") in _BINARY_PART_TYPES:
+        return True
+    # untyped part that still carries an image/file payload
+    for key in ("image_url", "image", "input_image", "file", "input_file"):
+        if key in item:
+            return True
+    return False
+
+
 def _extract_text(content: Any) -> str:
     if content is None:
         return ""
     if isinstance(content, list):
         parts = []
         for item in content:
+            if _is_binary_part(item):
+                continue  # images/files are uploaded, never typed as text
             if isinstance(item, dict) and item.get("type") == "text":
                 parts.append(item.get("text") or "")
             elif isinstance(item, dict):
@@ -195,12 +215,62 @@ def _extract_text(content: Any) -> str:
                 parts.append(str(item))
         return "\n".join(parts)
     if isinstance(content, dict):
+        if _is_binary_part(content):
+            return ""
         return str(content.get("text") or content)
     return str(content)
 
 
 TOOL_FENCE = "````"
 TOOL_CALL_SHAPE = '<tool>{"name": "<tool_name>", "arguments": { ... }}</tool>'
+
+
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGES = 8
+_IMAGE_PART_TYPES = ("image_url", "input_image", "image")
+
+
+def extract_images(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Base64 images of the LAST user message, ready for the extension.
+
+    Only the current turn is attached: the web discussion already holds the
+    images of previous turns, re-uploading them would duplicate them.
+    Remote URLs are refused: the extension must never fetch an arbitrary URL
+    with the provider's cookies.
+    """
+    user = None
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and (m.get("role") or "").lower() == "user":
+            user = m
+            break
+    if not user or not isinstance(user.get("content"), list):
+        return []
+    out: List[Dict[str, str]] = []
+    for part in user["content"]:
+        if not isinstance(part, dict) or part.get("type") not in _IMAGE_PART_TYPES:
+            continue
+        if part.get("type") == "image_url":
+            holder = part.get("image_url")
+            url = holder.get("url") if isinstance(holder, dict) else holder
+        else:
+            url = part.get("image_url") or part.get("url") or part.get("data")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url = url.strip()
+        if not url.startswith("data:"):
+            raise ValueError(
+                "Image URLs must be base64 data: URLs (the extension does not fetch remote URLs)"
+            )
+        if len(url) > MAX_IMAGE_BYTES:
+            raise ValueError(f"Image too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB per image)")
+        item: Dict[str, str] = {"url": url}
+        name = part.get("filename") or part.get("name")
+        if isinstance(name, str) and name.strip():
+            item["name"] = name.strip()[:120]
+        out.append(item)
+        if len(out) > MAX_IMAGES:
+            raise ValueError(f"Too many images in one request (max {MAX_IMAGES})")
+    return out
 
 
 def serialize_tools_prompt(tools: Optional[List[Dict[str, Any]]]) -> str:
@@ -250,14 +320,19 @@ def serialize_tools_prompt(tools: Optional[List[Dict[str, Any]]]) -> str:
 def format_messages_prompt(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
+    tool_contract: bool = True,
 ) -> str:
     """Build a single prompt string with roles + optional tools contract.
 
     Designed so the web UI of any provider receives a clear, role-labelled
     transcript that coding agents (Qwen Code, Cursor, etc.) already produce.
+
+    ``tool_contract=False`` leaves the tools out of the prompt: an agent that
+    brings its own tool instructions (Nemesis writes its own JSON dialect)
+    must not be given a second, contradictory contract.
     """
     system_parts: List[str] = []
-    tool_sys = serialize_tools_prompt(tools)
+    tool_sys = serialize_tools_prompt(tools) if tool_contract else ""
     if tool_sys:
         system_parts.append(tool_sys)
 
@@ -613,6 +688,57 @@ def _calls_from_inner(inner: str, fallback: str = "") -> List[Tuple[str, Dict[st
     return _calls_from_obj(obj, fallback)
 
 
+# An agent that brings its own tool dialect (Nemesis) writes its calls as
+# {"tool": name, "parameters": {...}} and does NOT send a tool list: NemApi
+# cannot know the names in advance. The shape below is what makes such a block
+# a call rather than an ordinary JSON snippet.
+_GENERIC_TOOL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,48}$")
+_GENERIC_TOOL_MARKERS = ("tool", "action", "tool_name")
+_GENERIC_ARG_KEYS = ("parameters", "arguments", "params", "args", "input")
+
+
+def _generic_calls(obj: Any) -> List[Tuple[str, Dict[str, Any]]]:
+    """Tool calls written in an agent's own JSON dialect.
+
+    Only used for agents that carry their own tool contract (feature
+    « native_tool_calls ») and did not send their tool list. The bar is high
+    on purpose: an ordinary answer often contains a JSON snippet, and a
+    snippet must never be swallowed as a call.
+    """
+    items = obj if isinstance(obj, list) else [obj]
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = ""
+        marked = False
+        for key in _GENERIC_TOOL_MARKERS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value.strip()
+                marked = True
+                break
+        if not name:
+            value = item.get("name")
+            if isinstance(value, str) and value.strip():
+                name = value.strip()
+        if not name or not _GENERIC_TOOL_NAME_RE.match(name):
+            continue
+        args: Any = None
+        for key in _GENERIC_ARG_KEYS:
+            if key in item:
+                args = item[key]
+                break
+        if args is None:
+            if not marked:
+                continue  # {"name": "..."} alone is too common in ordinary answers
+            args = {}
+        if not isinstance(args, dict):
+            continue
+        out.append((name, args))
+    return out
+
+
 def _qwen_params(body: str) -> Dict[str, Any]:
     params = {m.group(1): _param_value(m.group(2)) for m in _QWEN_PARAM_RE.finditer(body)}
     if params:
@@ -729,8 +855,13 @@ def parse_tool_calls(
     text: str,
     requested_names: Optional[List[str]] = None,
     tools: Optional[List[Any]] = None,
+    generic: bool = False,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """Extract tool calls from a web answer → (remaining text, OpenAI tool_calls)."""
+    """Extract tool calls from a web answer → (remaining text, OpenAI tool_calls).
+
+    ``generic`` accepts calls written in an agent's own JSON dialect when the
+    client did not send a tool list (feature « native_tool_calls »).
+    """
     if not text:
         return "", []
 
@@ -780,21 +911,30 @@ def parse_tool_calls(
         if inner.strip().startswith(("{", "[", "<function=")):
             add(m.start(), end, _calls_from_inner(inner))
     # fenced JSON naming one of the agent's tools
-    if requested_names:
-        known = {n.lower() for n in requested_names}
-        for m in _FENCED_JSON_RE.finditer(text):
-            if taken(m.start()):
-                continue
+    known = {n.lower() for n in (requested_names or [])}
+    for m in _FENCED_JSON_RE.finditer(text):
+        if taken(m.start()):
+            continue
+        try:
+            obj = loads_lenient(m.group(2))
+        except ValueError:
+            continue
+        if known:
             try:
-                calls = _calls_from_obj(loads_lenient(m.group(2)))
+                calls = _calls_from_obj(obj)
             except ValueError:
                 continue
             if calls and all(n.lower() in known for n, _ in calls):
                 add(m.start(), m.end(), calls)
+        elif generic:
+            # the agent brings its own tool dialect and sent no tool list
+            calls = _generic_calls(obj)
+            if calls:
+                add(m.start(), m.end(), calls)
 
     if not found:
         if not text.strip():
-            return text, []
+            return "", []
         rest = strip_tool_markup_noise(text)
         rest = re.sub(r"\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?:tool|tool_call)[ \t]*\s*\Z", "", "\n" + rest)
         return rest.strip(), []
