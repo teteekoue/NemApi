@@ -1,10 +1,17 @@
-# NemApi v5.2.0
+# NemApi v5.3.0
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+**Nouveautés v5.3.0 :**
+- ✅ **Un seul protocole pour tout le monde** : le corps de la requête est désormais **strictement OpenAI**. Les champs `fresh_chat` et `provider` ont disparu — un client qui les envoie est ignoré, pas obéi. L'agent se déclare par un **en-tête HTTP** (`X-NemApi-Agent`), que tout client sait envoyer
+- ✅ **Qwen Code : les trois points bloquants sont isolés et réglables** — « Plus de nouvelle URL » (la discussion ne se rouvre jamais), « Contexte incrémental » (le contexte est géré dans la discussion) et « Appels d'outils » (le tableau `tools` OpenAI est honoré, la réponse revient en `tool_calls`)
+- ✅ **Nemesis vraiment intégré** : le client n'envoie son prompt système qu'une fois, il était donc reconnu au premier tour seulement. NemApi retient désormais **la discussion attribuée** à l'agent (et l'en-tête `X-NemApi-Agent` reste la voie recommandée) — le correctif côté client est fourni dans `docs/nemesis-nemapi.patch`
+- ✅ **Analytics refaite** : activité quotidienne sur 14 jours (graphique SVG), tarifs de référence **vérifiés sur les pages tarifaires officielles** (avec le prix du cache de contexte et la date de vérification)
+- ✅ **Interface web reprise** : design system à jetons, shell plus lisible, icônes et accessibilité (lien d'évitement, `aria`, focus visible), pages Analytics / Intégrations / Configuration / Clés API / Tableau de bord refaites
 
 **Nouveautés v5.2.0 :**
 - ✅ **Intégration NEMESIS** (2ᵉ agent de la page « Intégration agents IA ») : une seule discussion web (plus jamais d'URL neuve) et **appels d'outils natifs** — les appels JSON de l'agent sont renvoyés au format OpenAI `tool_calls`. Pas de contexte incrémental : NEMESIS n'envoie que ce dont il a besoin
@@ -21,7 +28,7 @@
 - ✅ **Projet scindé en deux** : `extension/` (navigateur) et `proxy/` (serveur + interface web)
 - ✅ **Plus robuste** : jobs abandonnés annulés, slots bloqués libérés automatiquement, écriture atomique de la config
 - ✅ **Documentation interactive de l'API** sur `http://127.0.0.1:8090/docs`
-- ✅ **Tests automatisés** (51 tests, extension simulée)
+- ✅ **Tests automatisés** (extension simulée + vrais navigateurs Playwright)
 
 ---
 
@@ -159,9 +166,9 @@ L'interface de test (http://127.0.0.1:8090/chat) permet de :
 
 ## 📖 Utilisation de l'API
 
-### Format compatible OpenAI (recommandé)
+### Format compatible OpenAI
 
-Seul le champ `model` est requis. Le fournisseur est déduit automatiquement du nom du modèle :
+Le corps de la requête est **strictement OpenAI**. Seul le champ `model` est requis ; le fournisseur est déduit du nom du modèle :
 
 ```bash
 # Nom de modèle seul
@@ -176,22 +183,39 @@ curl -sS http://127.0.0.1:8090/v1/chat/completions \
   -d '{"model":"qwen/qwen-chat","messages":[{"role":"user","content":"Bonjour"}]}'
 ```
 
-### Format hérité (champ `provider` explicite)
-
-```bash
-curl -sS http://127.0.0.1:8090/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"provider":"qwen","model":"qwen-plus","messages":[{"role":"user","content":"Bonjour"}]}'
-```
-
-### Paramètres spécifiques à NemApi
+### Champs du corps
 
 | Champ | Effet |
 |---|---|
-| `provider` | Force le fournisseur (`deepseek`, `qwen`, `claude`, `gemini`, `chatgpt`, `kimi`, `zai`) |
-| `fresh_chat` | `true` : nouvelle discussion · `false` : réutilise la discussion en cours · absent : réglage global. **Ignoré pour un agent dont l'intégration (contexte incrémental) est active** (jamais de nouvelle discussion) |
-| `stream` | `true` : SSE · `false` : JSON · absent : réglage global (un en-tête `Accept: text/event-stream` force le SSE) |
-| `tools` | Outils au format OpenAI ; les appels détectés sont renvoyés en `tool_calls` |
+| `model` | Le modèle. Il **choisit** le fournisseur (`deepseek-chat` → DeepSeek, `qwen-plus` → Qwen, `gpt-4o` → ChatGPT…). |
+| `messages` | L'historique de la conversation, au format OpenAI. |
+| `tools` / `functions` | Outils au format OpenAI ; les appels détectés sont renvoyés en `tool_calls`. |
+| `stream` | `true` : SSE · `false` : JSON · absent : réglage global (un en-tête `Accept: text/event-stream` force le SSE). |
+
+**Aucun champ propriétaire.** Ni `fresh_chat`, ni `provider` : un client qui les envoie est ignoré, pas obéi. Le protocole
+est le même pour tout le monde — c'est ce qui permet à n'importe quel client OpenAI (Qwen Code, Cline, Aider, un
+`curl`, un script) de parler à NemApi sans configuration.
+
+### Comment l'agent est déclaré
+
+L'agent se déclare par un **en-tête HTTP**, jamais par le corps :
+
+```bash
+-H "X-NemApi-Agent: qwen-code"    # ou nemesis
+```
+
+Sans cet en-tête, NemApi reconnaît l'agent par son User-Agent (`QwenCode/…`) ou par son prompt système. L'en-tête est
+la voie recommandée : il est reconnu à **chaque** requête.
+
+### Qui ouvre une nouvelle discussion ?
+
+Jamais le client. C'est le proxy qui décide :
+
+| Situation | Nouvelle discussion ? |
+|---|---|
+| Mode classique (aucune intégration active) | selon le réglage **Configuration → Nouvelle discussion à chaque requête** |
+| Intégration active avec « Plus de nouvelle URL » / « Discussion unique » | **jamais** — la discussion reste la même |
+| Intégration active avec « Contexte incrémental » | **jamais** — et le contexte est géré dans la discussion |
 
 ### Images (multimodal)
 
@@ -271,10 +295,15 @@ Page **Intégration agents IA** (menu ☰ ou `http://127.0.0.1:8090/integrations
 
 | Fonction | Effet |
 |---|---|
-| Contexte incrémental | une seule discussion, jamais de nouveau chat ; seuls les nouveaux messages sont tapés (détails ci-dessous) |
+| Plus de nouvelle URL | la requête ne rouvre **jamais** le chat web : l'URL de la discussion reste la même d'un tour à l'autre (indépendant du réglage global) |
+| Contexte incrémental | une seule discussion ; seuls les nouveaux messages sont tapés (détails ci-dessous) |
+| Appels d'outils | le tableau `tools` OpenAI de l'agent est transmis au modèle avec son contrat d'appel, et la réponse est renvoyée au format OpenAI `tool_calls` |
 | Requêtes annexes en local | mémoire, suggestions, `respond_in_schema` : réponse neutre immédiate ; classifieur de sécurité refusé |
 | Suite automatique des réponses coupées | un appel d'outil coupé (gros fichier) est complété dans la même discussion puis recollé |
 | Connexion maintenue | en streaming, en-têtes envoyés tout de suite puis un signal toutes les 15 s |
+
+Les trois premières fonctions sont le socle de l'intégration : sans elles, Qwen Code rouvrirait un chat vide à chaque
+requête et renverrait tout son contexte — lent et coûteux.
 
 Reconnaissance de l'agent, à chaque requête : en-tête `X-NemApi-Agent: qwen-code` (prioritaire ; une autre valeur force le mode classique) → `User-Agent` `QwenCode/…` (envoyé par Qwen Code) → prompt système « You are Qwen Code ». La carte indique quand Qwen Code a été vu pour la dernière fois et comment, et le tableau « Clients récents » montre le mode appliqué à chaque client.
 
@@ -295,9 +324,22 @@ provider:
 nemapi:
   url: "http://127.0.0.1:8090/v1"
   # token: nemapi-token…   # si la protection API est active
+  # agent: nemesis          # facultatif : en-tête X-NemApi-Agent
 ```
 
-Reconnaissance : en-tête `X-NemApi-Agent: nemesis` → `User-Agent` `Nemesis-Agent/…` → prompt système « NEMESIS Runtime Prompt » (NEMESIS fusionne son prompt système dans le **premier message utilisateur**, il est donc cherché là aussi).
+**Le point important.** Nemesis n'envoie son prompt système qu'une **seule fois** (il le fusionne dans son premier
+message utilisateur, puis le garde pour lui). Sans signal, NemApi ne le reconnaîtrait qu'au premier tour — et reviendrait
+au mode classique ensuite, en rouvrant une discussion vide à chaque requête : le contexte serait perdu.
+
+Deux parades, cumulables :
+
+1. **l'en-tête `X-NemApi-Agent: nemesis`** — recommandé, reconnu à chaque requête. Le correctif côté client est dans
+   `docs/nemesis-nemapi.patch` (il ajoute l'en-tête et retire l'ancien champ `fresh_chat` du corps, qui n'existe plus) ;
+2. **la discussion attribuée** — quand un agent ouvre une discussion et ne la rouvre jamais, NemApi retient qu'elle lui
+   appartient : les requêtes suivantes, même sans aucun signal, restent dans son mode. Une requête qui porte un tableau
+   `tools` n'est jamais attribuée à Nemesis (il n'en envoie jamais).
+
+Reconnaissance : en-tête `X-NemApi-Agent: nemesis` → `User-Agent` `Nemesis-Agent/…` → prompt système « You are **NEMESIS** » (NEMESIS fusionne son prompt système dans le **premier message utilisateur**, il est donc cherché là aussi) → discussion attribuée.
 
 Restent actifs pour tout le monde, intégration ou non : la lecture des appels d'outils (DSML, `<tool>`…), le contrat ` ````tool `, la robustesse de l'extension et la protection contre l'exécution d'un appel d'outil coupé.
 

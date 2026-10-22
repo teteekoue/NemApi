@@ -39,7 +39,15 @@ class ConfigStore:
 
     # ------------------------------------------------------------------ io
     def _defaults(self) -> Dict[str, Any]:
-        return {"api_keys": {}, "settings": dict(DEFAULT_SETTINGS), "integrations": {}}
+        return {
+            "api_keys": {},
+            "settings": dict(DEFAULT_SETTINGS),
+            "integrations": {},
+            # provider id → agent id that owns the web discussion (the agent
+            # that never opens a new one). Remembered so a client that does
+            # not identify itself on every request keeps its integration.
+            "discussion_owners": {},
+        }
 
     def _load(self) -> Dict[str, Any]:
         if not self.path.exists():
@@ -62,6 +70,8 @@ class ConfigStore:
         data["settings"] = {**DEFAULT_SETTINGS, **{k: bool(v) for k, v in settings.items() if k in DEFAULT_SETTINGS}}
         if not isinstance(data.get("integrations"), dict):
             data["integrations"] = {}
+        if not isinstance(data.get("discussion_owners"), dict):
+            data["discussion_owners"] = {}
         return data
 
     def save(self) -> None:
@@ -111,6 +121,33 @@ class ConfigStore:
                 "enabled": bool(value.get("enabled")),
                 "features": {k: bool(v) for k, v in (value.get("features") or {}).items()},
             }
+            self.save()
+
+    # -------------------------------------------------- discussion owners
+    def discussion_owner(self, provider: str) -> str:
+        """Agent id that owns the web discussion of this provider ('' = none)."""
+        with self._lock:
+            owner = self._data.get("discussion_owners", {}).get(provider)
+            return owner if isinstance(owner, str) else ""
+
+    def set_discussion_owner(self, provider: str, agent_id: str) -> None:
+        with self._lock:
+            owners = self._data.setdefault("discussion_owners", {})
+            if agent_id:
+                if owners.get(provider) == agent_id:
+                    return
+                owners[provider] = agent_id
+            else:
+                if provider not in owners:
+                    return
+                owners.pop(provider, None)
+            self.save()
+
+    def clear_discussion_owners(self) -> None:
+        with self._lock:
+            if not self._data.get("discussion_owners"):
+                return
+            self._data["discussion_owners"] = {}
             self.save()
 
     # ------------------------------------------------------------ api keys

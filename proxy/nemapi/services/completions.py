@@ -28,6 +28,7 @@ class PreparedCompletion:
     fresh_chat: Optional[bool]
     plan: Optional[Plan] = None  # incremental-context plan (feature enabled)
     tools: Optional[List[Any]] = None
+    tool_mode: str = "openai"  # "openai" | "native" | "off" (tool-call dialect)
     local: Optional[LocalAnswer] = None  # agent side query answered without the browser
     integration: Optional[ActiveIntegration] = None  # None = classic NemApi behaviour
 
@@ -45,7 +46,7 @@ class CompletionResult:
 
 def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, str]) -> PreparedCompletion:
     model = (body.model or "").strip()
-    provider = resolve_provider(model, body.provider or "")
+    provider = resolve_provider(model)
 
     messages = body.messages or []
     if not messages:
@@ -59,14 +60,30 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
 
     # Classic NemApi unless the request comes from an agent whose integration
     # is enabled (« Intégration agents IA » page).
-    integration = ctx.integrations.resolve(headers, messages)
+    integration = ctx.integrations.resolve(headers, messages, provider, tools)
+
+    # Which tool-call dialect applies:
+    #   "openai" — the agent sends the standard OpenAI "tools" array; NemApi
+    #              gives the model its contract (the web model needs it to
+    #              write a parsable call) and validates the names it answers.
+    #   "native" — the agent brings its own dialect (Nemesis writes JSON);
+    #              NemApi must not inject a second, contradictory contract.
+    #   "off"    — the integration does not want tool calls at all.
+    if integration is None:
+        tool_mode = "openai"
+    elif integration.has("native_tool_calls"):
+        tool_mode = "native"
+    elif integration.has("tool_calls"):
+        tool_mode = "openai"
+    else:
+        tool_mode = "off"
+    if tool_mode == "off":
+        tools = None
 
     prompt = format_messages_prompt(
         messages,
         tools=tools,
-        # An agent that brings its own tool instructions must not be given a
-        # second, contradictory contract (Nemesis writes its own JSON dialect).
-        tool_contract=not (integration is not None and integration.has("native_tool_calls")),
+        tool_contract=(tool_mode == "openai"),
     )
     # Images live outside the text prompt: the extension uploads them through
     # the provider's file input before typing the prompt itself.
@@ -107,14 +124,18 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
             )
 
     # « Discussion unique »: the request must never open a new discussion, so
-    # the web chat keeps the same URL. The client cannot override it.
-    fresh_chat = body.fresh_chat
-    if integration is not None and integration.has("persistent_chat"):
+    # the web chat keeps the same URL. The client cannot decide it: the proxy
+    # does — the global setting, overridden by the agent integration.
+    fresh_chat = None
+    if integration is not None and (
+        integration.has("persistent_chat") or integration.has("incremental_context")
+    ):
         fresh_chat = False
 
     return PreparedCompletion(
         plan=plan,
         tools=tools,
+        tool_mode=tool_mode,
         local=local,
         integration=integration,
         provider=provider,
@@ -204,7 +225,7 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
         raise APIError(500, job.error or "automation failed", "automation_error")
 
     parsed = job.parsed or postprocess(
-        job.result, prep.tool_names, prep.tools, generic=prep.has("native_tool_calls")
+        job.result, prep.tool_names, prep.tools, generic=(prep.tool_mode == "native")
     )
     # usage/cost always reflect the full conversation (what an API would bill),
     # even when only a delta was typed into the web UI

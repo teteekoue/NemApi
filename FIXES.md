@@ -501,3 +501,87 @@ nouveaux fournisseurs.
   pendant l'upload, et une app qui ignore les événements ne doit pas
   annoncer un succès.
   Résultat : **256 tests passent, 0 échec, 0 ignoré**.
+
+## 12. v5.3.0 — Un seul protocole, deux intégrations au point, l'interface revue (2026-10-22)
+
+### Le corps de la requête n'est plus qu'OpenAI
+
+Le champ `fresh_chat` (nouvelle discussion) et le champ `provider` sortaient
+du corps de la requête : un client pouvait dicter à NemApi son comportement,
+et chaque client était lié à un dialecte NemApi. Les deux ont disparu du
+schéma ; un client qui les envoie est **ignoré, pas obéi**. Le fournisseur
+est déduit du `model`, comme dans toute passerelle compatible OpenAI.
+
+Ce qui décide maintenant d'ouvrir une nouvelle discussion, c'est le proxy :
+
+- le réglage global **Configuration → Nouvelle discussion à chaque requête** ;
+- l'intégration de l'agent : « Plus de nouvelle URL » / « Discussion unique »
+  (et le contexte incrémental, qui l'implique) → **jamais** de nouvelle
+  discussion.
+
+Un client qui n'envoie aucun signal d'agent n'est pas necessarily «
+classique » : il peut hériter du mode de l'agent qui possède la discussion
+(§ ci-dessous). Une requête qui porte un tableau `tools`, elle, n'hérite
+jamais de Nemesis (il n'en envoie jamais).
+
+### Qwen Code : les trois points bloquants, isolés et réglables
+
+L'intégration ne disait pas *ce qui* changeait ; elle faisait « contexte
+incrémental + untel ». Les trois points bloquants de Qwen Code sont
+maintenant trois fonctions, chacune activable seule :
+
+| Fonction | Ce qu'elle règle |
+|---|---|
+| `persistent_chat` | plus de nouvelle URL (avant : ça dépendait du contexte incrémental) |
+| `incremental_context` | le contexte est géré dans la discussion |
+| `tool_calls` | le tableau `tools` OpenAI est honoré, la réponse revient en `tool_calls` |
+
+Le contrat d'outils est désormais decided par l'intégration : « openai »
+(NemApi donne son contrat et valide les noms), « native » (l'agent a le
+sien, NemApi n'injecte rien) ou « off ».
+
+### Nemesis : la discussion qui lui appartient
+
+Nemesis n'envoie son prompt système qu'une **seule fois** — il le fusionne
+dans son premier message utilisateur et le garde pour lui. NemApi le
+reconnaissait donc au premier tour, puis revenait au mode classique : une
+discussion neuve à chaque requête, et le contexte perdu (Nemesis ne renvoie
+que le message courant).
+
+Deux parades :
+
+- **l'en-tête `X-NemApi-Agent: nemesis`** — la voie propre, reconnue à
+  chaque requête. Le correctif client est fourni (`docs/nemesis-nemapi.patch`) :
+  il ajoute l'en-tête et retire l'ancien `fresh_chat` du corps ;
+- **la discussion attribuée** — un agent qui ne rouvre jamais de discussion
+  en garde la propriété (`config.discussion_owners`, persisté) ; les
+  requêtes suivantes, sans signal, lui sont attribuées.
+
+### Les tarifs de référence étaient périmés
+
+La table portait des prix d'août 2026 (DeepSeek V3.2, Claude Sonnet 4.5,
+Gemini 3.5 Flash, GPT-4o…). Les prix officiels ont été revérifiés le
+2026-10-22 : DeepSeek V4-Pro, Qwen3.7-Plus, Claude Sonnet 5.5, Gemini 3.8
+Flash, GPT-6.1 Sol, Kimi K3, GLM-5.3. Chaque entrée porte maintenant son
+prix de **cache de contexte**, sa remarque (promo, tarif hors pointe,
+plateforme) et sa **source**. La date de vérification est affichée dans la
+page Analytics : un tarif non vérifié est une faute.
+
+### L'interface web
+
+- **Design system à jetons** (`admin.css`) : surfaces, texte, sémantique,
+  ombres, mouvement — thèmes clair et sombre définis ensemble.
+- **Activité quotidienne** : l'historique par jour (14 jours) est persisté et
+  affiché en graphique SVG (requêtes / tokens / coût).
+- **Intégrations** : chaque carte explique **comment NemApi reconnaît
+  l'agent** (en-tête, User-Agent, prompt) et montre les discussions
+  attribuées.
+- **Configuration** : la carte « L'API » rappelle que le corps est
+  strictement OpenAI et donne un `curl` de référence.
+- **Bug d'affichage** : `icon(name, "")` produisait un SVG **sans classe**,
+  donc sans règle de taille — les icônes prenaient la taille de leur
+  conteneur (200 px sur le tableau de bord). Le helper force désormais la
+  classe `ico`, qui porte la taille par défaut ; un test vérifie qu'aucune
+  icône ne dépasse 40 px sur les six pages.
+
+Résultat : **268 tests passent, 0 échec, 0 ignoré**.

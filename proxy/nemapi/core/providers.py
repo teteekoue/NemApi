@@ -55,16 +55,68 @@ _KEYWORD_RULES = [
     (re.compile(r"chatgpt|openai|gpt|^o[1-9](\b|-|$)"), "chatgpt"),
 ]
 
-# Pricing USD per 1K tokens (approx. mid-tier API list prices, Aug 2026).
+# Public API list prices, USD per 1K tokens (verified 2026-10-22 on the
+# official pricing pages). These are the prices an API would bill; the web
+# bridge itself is free — the numbers only put the usage in perspective.
+#
+# Each entry:
+#   prompt      — price per 1K input tokens
+#   completion  — price per 1K output tokens
+#   cached      — price per 1K input tokens when the provider serves them
+#                from its context cache (None = no separate cache price)
+#   label       — the reference model the price refers to
+#   note        — what makes the price special (promo, off-peak, tier…)
 TOKEN_PRICING: Dict[str, Dict] = {
-    "deepseek": {"prompt": 0.00014, "completion": 0.00028, "label": "DeepSeek V4 Flash"},
-    "qwen": {"prompt": 0.00050, "completion": 0.00300, "label": "Qwen Plus"},
-    "claude": {"prompt": 0.00300, "completion": 0.01500, "label": "Claude Sonnet"},
-    "gemini": {"prompt": 0.00150, "completion": 0.00900, "label": "Gemini Flash"},
-    "chatgpt": {"prompt": 0.00250, "completion": 0.01000, "label": "GPT-4o / mid"},
-    "kimi": {"prompt": 0.00095, "completion": 0.00400, "label": "Kimi K2.6"},
-    "zai": {"prompt": 0.00140, "completion": 0.00440, "label": "GLM-5.2"},
+    "deepseek": {
+        "prompt": 0.00066, "completion": 0.00198, "cached": 0.000022,
+        "label": "DeepSeek V4-Pro",
+        "note": "tarif hors pointe (la pointe, 01h–04h et 06h–10h UTC, coûte le double)",
+    },
+    "qwen": {
+        "prompt": 0.00040, "completion": 0.00160, "cached": 0.00004,
+        "label": "Qwen3.7-Plus",
+        "note": "prix international ≤ 256K tokens ; −20 % en promotion ; cache à 10 %",
+    },
+    "claude": {
+        "prompt": 0.00200, "completion": 0.01000, "cached": 0.00010,
+        "label": "Claude Sonnet 5.5",
+        "note": "lecture du cache à 5 % ; écriture du cache facturée en plus",
+    },
+    "gemini": {
+        "prompt": 0.00075, "completion": 0.00375, "cached": 0.000075,
+        "label": "Gemini 3.8 Flash",
+        "note": "prix d'introduction jusqu'au 31/12/2026 (1,50 $ / 7,50 $ ensuite)",
+    },
+    "chatgpt": {
+        "prompt": 0.00200, "completion": 0.01000, "cached": 0.00010,
+        "label": "GPT-6.1 Sol",
+        "note": "entrée en cache à 5 % ; écriture du cache facturée en plus",
+    },
+    "kimi": {
+        "prompt": 0.00300, "completion": 0.01500, "cached": 0.00030,
+        "label": "Kimi K3",
+        "note": "l'écriture du cache coûte le prix d'une entrée complète",
+    },
+    "zai": {
+        "prompt": 0.00140, "completion": 0.00440, "cached": 0.00026,
+        "label": "GLM-5.3",
+        "note": "prix international en USD (la plateforme Chine est en CNY)",
+    },
 }
+
+# Where the numbers come from (official pricing pages, checked 2026-10-22).
+PRICING_SOURCES: Dict[str, str] = {
+    "deepseek": "api-docs.deepseek.com/quick_start/pricing",
+    "qwen": "alibabacloud.com/help/en/model-studio/model-pricing",
+    "claude": "anthropic.com/pricing",
+    "gemini": "ai.google.dev/pricing",
+    "chatgpt": "platform.openai.com/docs/pricing",
+    "kimi": "platform.kimi.ai/docs/pricing/chat",
+    "zai": "docs.z.ai/guides/overview/pricing",
+}
+
+# When the prices above were checked against the official pages.
+PRICING_CHECKED_AT = "2026-10-22"
 
 MODEL_TO_PROVIDER: Dict[str, str] = {}
 for _pid, _info in PROVIDERS.items():
@@ -104,7 +156,12 @@ def guess_provider(model: str) -> Optional[str]:
 
 
 def resolve_provider(model: str, explicit_provider: str = "") -> str:
-    """Return the provider id for a request or raise APIError(400)."""
+    """Return the provider id for a request or raise APIError(400).
+
+    The provider comes from the model, like every OpenAI-compatible gateway:
+    ``deepseek-chat`` → deepseek, ``qwen-plus`` → qwen. ``explicit_provider``
+    is only used internally (the admin tools), never read from a request.
+    """
     explicit = (explicit_provider or "").lower().strip()
     if explicit:
         if explicit not in PROVIDERS:

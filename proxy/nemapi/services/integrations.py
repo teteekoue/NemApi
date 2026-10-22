@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from ..core.providers import PROVIDERS
 from .config_store import ConfigStore
 from .logs import LogBuffer
 
@@ -45,6 +46,24 @@ class AgentProfile:
     prompt_markers: Tuple[str, ...] = ()  # substrings of the agent's system prompt
     homepage: str = ""
     snippet: str = ""  # ready-to-copy configuration; {base} is the NemApi base URL
+    # Header value the agent must send so NemApi recognises it on EVERY
+    # request. The prompt marker is only good for the first turn (an agent
+    # sends its system prompt once), so the header is the reliable path.
+    header: str = ""
+    # The agent never sends a "tools" array (it brings its own dialect), so
+    # a request that carries one is another client's, not its.
+    native_tools_only: bool = False
+
+    def accepts_request(self, messages: Sequence[Any], tools: Optional[List[Any]]) -> bool:
+        """Is this request compatible with what this agent sends?
+
+        The owner of a discussion is used when a request carries no
+        identifying signal. A request that carries something the agent would
+        NEVER send belongs to another client and must not inherit its mode.
+        """
+        if self.native_tools_only and tools:
+            return False
+        return True
 
     def detect(self, headers: Mapping[str, str], messages: Sequence[Any]) -> Optional[str]:
         """How this request was recognised as coming from the agent, or None."""
@@ -67,6 +86,27 @@ class AgentProfile:
                 if any(marker in text for marker in self.prompt_markers):
                     return "prompt système" if m.get("role") in ("system", "developer") else "prompt de l'agent"
         return None
+
+    def identifiers(self) -> List[Dict[str, str]]:
+        """How this agent can be recognised, best method first."""
+        out: List[Dict[str, str]] = []
+        if self.header:
+            out.append({
+                "kind": "header",
+                "value": f"X-NemApi-Agent: {self.header}",
+                "note": "recommandé — recognised à chaque requête",
+            })
+        if self.user_agents:
+            out.append({"kind": "user-agent", "value": self.user_agents[0] + "…", "note": "automatique"})
+        if self.prompt_markers:
+            out.append({"kind": "prompt", "value": self.prompt_markers[0], "note": "première requête seulement"})
+        return out
+
+    def owns_discussion(self) -> bool:
+        """True when the agent never opens a new discussion (it continues the
+        one already open), which is what makes it the owner of that web
+        discussion."""
+        return any(f.id == "persistent_chat" for f in self.features)
 
 
 def _text(content: Any) -> str:
@@ -93,20 +133,38 @@ QWEN_CODE = AgentProfile(
     ),
     user_agents=("QwenCode/",),
     prompt_markers=("You are Qwen Code",),
+    header="qwen-code",
     snippet=(
         'export OPENAI_BASE_URL="{base}"\n'
         'export OPENAI_API_KEY="nemapi"       # ta clé NemApi si la protection est active\n'
         'export OPENAI_MODEL="deepseek-chat"  # ou qwen-chat, claude-chat, gemini-chat…\n'
+        "# Qwen Code est reconnu par son User-Agent (QwenCode/…) : rien à ajouter.\n"
         "qwen"
     ),
     features=(
         Feature(
+            "persistent_chat",
+            "Plus de nouvelle URL",
+            "La requête ne rouvre jamais le chat web : l'URL de la discussion reste la même d'un tour à "
+            "l'autre. Sans cela, chaque requête repartirait d'une discussion vide — et l'agent devrait "
+            "renvoyer tout son contexte à chaque fois.",
+            tag="discussion",
+        ),
+        Feature(
             "incremental_context",
             "Contexte incrémental",
-            "Une seule discussion web, jamais de nouveau chat : la 1re requête envoie tout (prompt système, "
-            "outils, message), ensuite seuls les messages absents de la discussion sont tapés. Les doublons "
-            "sont filtrés.",
+            "Le contexte n'est plus renvoyé par l'agent : NemApi compare son historique avec ce que la "
+            "discussion contient déjà et ne tape que ce qui manque (prompt système, outils, message). "
+            "Les doublons sont filtrés.",
             tag="contexte",
+        ),
+        Feature(
+            "tool_calls",
+            "Appels d'outils",
+            "Le tableau « tools » OpenAI de l'agent est transmis au modèle avec son contrat d'appel, et la "
+            "réponse est renvoyée au format OpenAI tool_calls. Les appels dont le nom est inconnu ne sont "
+            "pas exécutés.",
+            tag="outils",
         ),
         Feature(
             "side_queries_local",
@@ -152,6 +210,8 @@ NEMESIS = AgentProfile(
     # opens with « You are **NEMESIS** »; prompt_system.txt is the older
     # fallback wording.
     prompt_markers=("You are **NEMESIS**", "NEMESIS Runtime Prompt", "NEMESIS is a reliable engineering agent"),
+    header="nemesis",
+    native_tools_only=True,
     snippet=(
         "# config.yaml de NEMESIS\n"
         "provider:\n"
@@ -160,7 +220,8 @@ NEMESIS = AgentProfile(
         "\n"
         "nemapi:\n"
         '  url: "{base}"\n'
-        "  # token: nemapi-token…   # si la protection API est active"
+        "  # token: nemapi-token…   # si la protection API est active\n"
+        "  # agent: nemesis        # facultatif : en-tête X-NemApi-Agent"
     ),
     features=(
         Feature(
@@ -175,12 +236,13 @@ NEMESIS = AgentProfile(
             "native_tool_calls",
             "Appels d'outils natifs",
             "Les appels d'outils écrits par l'agent (JSON dans un bloc ```json) sont renvoyés au format "
-            "OpenAI tool_calls au lieu de rester dans le texte. Le contrat d'outils de l'agent n'est pas "
+            "OpenAI tool_calls au lieu de rester dans le texte. Le contrat d'outils de NemApi n'est pas "
             "réécrit par NemApi : c'est l'agent qui décide du format.",
             tag="outils",
         ),
     ),
 )
+
 
 AGENTS: Tuple[AgentProfile, ...] = (QWEN_CODE, NEMESIS)
 AGENTS_BY_ID: Dict[str, AgentProfile] = {a.id: a for a in AGENTS}
@@ -262,8 +324,36 @@ class IntegrationManager:
     def incremental_enabled(self) -> bool:
         return any(self.state(a.id)["enabled"] and self.state(a.id)["features"].get("incremental_context") for a in AGENTS)
 
+    # ------------------------------------------------- discussion owners
+    def owner_of(self, provider: str) -> str:
+        """Agent that owns the web discussion of this provider ('' = none)."""
+        if not provider:
+            return ""
+        owner = self.config.discussion_owner(provider)
+        if not owner:
+            return ""
+        agent = AGENTS_BY_ID.get(owner)
+        if agent is None or not self.state(owner)["enabled"]:
+            return ""
+        return owner
+
+    def _remember_owner(self, provider: str, agent: AgentProfile, active: bool) -> None:
+        """An agent that never opens a new discussion owns the one that is
+        open: NemApi remembers it, so the requests that follow — which carry
+        no identifying signal any more — stay in that agent's mode."""
+        if not provider:
+            return
+        if active and agent.owns_discussion():
+            self.config.set_discussion_owner(provider, agent.id)
+        else:
+            self.config.set_discussion_owner(provider, "")
+
+    def forget_owners(self) -> None:
+        self.config.clear_discussion_owners()
+
     # ------------------------------------------------------------ requests
-    def resolve(self, headers: Mapping[str, str], messages: Sequence[Any]) -> Optional[ActiveIntegration]:
+    def resolve(self, headers: Mapping[str, str], messages: Sequence[Any],
+                provider: str = "", tools: Optional[List[Any]] = None) -> Optional[ActiveIntegration]:
         """Integration to apply to this request (None = classic NemApi)."""
         found: Optional[Tuple[AgentProfile, str]] = None
         for agent in AGENTS:
@@ -271,6 +361,14 @@ class IntegrationManager:
             if reason:
                 found = (agent, reason)
                 break
+        if found is None and provider:
+            # No signal this time: the discussion is still the one the agent
+            # opened, so the request belongs to that agent.
+            owner_id = self.owner_of(provider)
+            if owner_id:
+                owner = AGENTS_BY_ID.get(owner_id)
+                if owner is not None and owner.accepts_request(messages, tools):
+                    found = (owner, "discussion de l'agent")
         active = None
         if found is not None:
             agent, reason = found
@@ -281,6 +379,7 @@ class IntegrationManager:
                             user_agent=(headers.get("user-agent") or "")[:120])
             if st["enabled"]:
                 active = ActiveIntegration(agent, st["features"], reason)
+            self._remember_owner(provider, agent, active is not None)
         self._track(headers, found[0] if found else None, active)
         return active
 
@@ -316,6 +415,8 @@ class IntegrationManager:
                 "description": a.description,
                 "setup": a.setup,
                 "snippet": a.snippet,
+                "header": a.header,
+                "identifiers": a.identifiers(),
                 "enabled": st["enabled"],
                 "features": [
                     {"id": f.id, "label": f.label, "description": f.description, "default": f.default,
@@ -336,7 +437,8 @@ class IntegrationManager:
                  "seconds_ago": int(now - c.last_seen)}
                 for c in clients
             ]
-        return {"agents": agents, "clients": client_list}
+        owners = {pid: aid for pid in PROVIDERS if (aid := self.owner_of(pid))}
+        return {"agents": agents, "clients": client_list, "discussion_owners": owners}
 
     def summary(self) -> Dict[str, bool]:
         return {a.id: self.state(a.id)["enabled"] for a in AGENTS}

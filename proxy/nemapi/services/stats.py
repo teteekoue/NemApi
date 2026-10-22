@@ -2,22 +2,32 @@
 
 Counters live in memory; disk writes are batched by a background task instead of
 rewriting the file synchronously on every request (major latency fix vs v4.0).
+
+The daily history (one bucket per day, 14 days kept) is what makes the
+analytics page a real dashboard instead of a single total.
 """
 from __future__ import annotations
 
 import asyncio
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from ..core.providers import PROVIDERS, TOKEN_PRICING, calculate_cost
+from ..core.providers import PRICING_CHECKED_AT, PRICING_SOURCES, PROVIDERS, TOKEN_PRICING, calculate_cost
 from ..utils.jsonfile import read_json, write_json_atomic
 from .logs import LogBuffer
 
+# How many days of history are kept (the chart shows them all).
+HISTORY_DAYS = 14
+
 
 def _empty_provider() -> Dict[str, float]:
+    return {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
+
+
+def _empty_day() -> Dict[str, float]:
     return {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0}
 
 
@@ -39,6 +49,7 @@ class StatsStore:
             "completion_tokens": 0,
             "estimated_cost": 0.0,
             "providers": {pid: _empty_provider() for pid in PROVIDERS},
+            "daily": {},
             "updated_at": None,
         }
 
@@ -58,6 +69,20 @@ class StatsStore:
                         "completion_tokens": int(pdata.get("completion_tokens") or 0),
                         "cost": float(pdata.get("cost") or 0.0),
                     }
+            daily = data.get("daily")
+            if isinstance(daily, dict):
+                for day, ddata in daily.items():
+                    if not isinstance(day, str) or not isinstance(ddata, dict):
+                        continue
+                    try:
+                        base["daily"][day] = {
+                            "requests": int(ddata.get("requests") or 0),
+                            "prompt_tokens": int(ddata.get("prompt_tokens") or 0),
+                            "completion_tokens": int(ddata.get("completion_tokens") or 0),
+                            "cost": float(ddata.get("cost") or 0.0),
+                        }
+                    except (TypeError, ValueError):
+                        continue
             base.update(
                 requests=int(data.get("requests") or 0),
                 prompt_tokens=int(data.get("prompt_tokens") or 0),
@@ -114,9 +139,27 @@ class StatsStore:
             p["prompt_tokens"] += prompt_tokens
             p["completion_tokens"] += completion_tokens
             p["cost"] += cost
+            day = d["daily"].setdefault(date.today().isoformat(), _empty_day())
+            day["requests"] += 1
+            day["prompt_tokens"] += prompt_tokens
+            day["completion_tokens"] += completion_tokens
+            day["cost"] += cost
+            self._prune(d["daily"])
             d["updated_at"] = datetime.now().isoformat(timespec="seconds")
             self._dirty = True
         return cost
+
+    @staticmethod
+    def _prune(daily: Dict[str, Any]) -> None:
+        """Keep the last HISTORY_DAYS days only.
+
+        The cutoff is a DATE, not a count: a history written every day for a
+        month holds 30 buckets, but a history that skipped a week still holds
+        stale days that must go.
+        """
+        cutoff = (date.today() - timedelta(days=HISTORY_DAYS - 1)).isoformat()
+        for day in [k for k in daily if k < cutoff]:
+            daily.pop(day, None)
 
     def clear(self) -> None:
         with self._lock:
@@ -127,26 +170,49 @@ class StatsStore:
         self.logs.info("Analytics counters reset")
 
     # ------------------------------------------------------------- reports
+    @staticmethod
+    def pricing_view(pid: str) -> Dict[str, Any]:
+        """The reference prices of a provider, as shown in the analytics page."""
+        p = TOKEN_PRICING.get(pid, {})
+        return {
+            "prompt_per_1k": p.get("prompt"),
+            "completion_per_1k": p.get("completion"),
+            "cached_per_1k": p.get("cached"),
+            "label": p.get("label", pid),
+            "note": p.get("note", ""),
+            "source": PRICING_SOURCES.get(pid, ""),
+        }
+
     def report(self, started_at: float, version: str) -> Dict[str, Any]:
         with self._lock:
             d = self._data
             providers_out = {}
             for name, pdata in d["providers"].items():
                 req = pdata.get("requests") or 0
-                pricing = TOKEN_PRICING.get(name, {})
                 providers_out[name] = {
                     **pdata,
                     "avg_prompt_tokens": round(pdata["prompt_tokens"] / req, 1) if req else 0,
                     "avg_completion_tokens": round(pdata["completion_tokens"] / req, 1) if req else 0,
                     "cost": round(pdata.get("cost") or 0.0, 6),
-                    "pricing": {
-                        "prompt_per_1k": pricing.get("prompt"),
-                        "completion_per_1k": pricing.get("completion"),
-                        "label": pricing.get("label", name),
-                    },
+                    "pricing": self.pricing_view(name),
                 }
             uptime = max(1, int(time.time() - started_at))
             total = d["requests"]
+            # The last HISTORY_DAYS days, oldest first, with the empty days
+            # filled in: a gap in the chart must read as "nothing that day",
+            # not as a missing point.
+            today = date.today()
+            days: List[Dict[str, Any]] = []
+            for offset in range(HISTORY_DAYS - 1, -1, -1):
+                key = (today - timedelta(days=offset)).isoformat()
+                bucket = d["daily"].get(key) or _empty_day()
+                days.append({
+                    "date": key,
+                    "requests": bucket["requests"],
+                    "prompt_tokens": bucket["prompt_tokens"],
+                    "completion_tokens": bucket["completion_tokens"],
+                    "cost": round(bucket["cost"], 6),
+                })
             return {
                 "version": version,
                 "uptime_seconds": uptime,
@@ -158,14 +224,10 @@ class StatsStore:
                 "total_tokens": d["prompt_tokens"] + d["completion_tokens"],
                 "estimated_cost": round(d["estimated_cost"], 6),
                 "providers": providers_out,
-                "pricing": {
-                    pid: {
-                        "prompt_per_1k": p.get("prompt"),
-                        "completion_per_1k": p.get("completion"),
-                        "label": p.get("label", pid),
-                    }
-                    for pid, p in TOKEN_PRICING.items()
-                },
+                "daily": days,
+                "history_days": HISTORY_DAYS,
+                "pricing": {pid: self.pricing_view(pid) for pid in TOKEN_PRICING},
+                "pricing_checked_at": PRICING_CHECKED_AT,
                 "updated_at": d.get("updated_at"),
                 "persisted": True,
             }

@@ -222,3 +222,77 @@ async def test_the_features_can_be_switched_off_independently(server):
         msg = r.json()["choices"][0]["message"]
         assert not msg.get("tool_calls")  # the call stays in the text
         assert "read_file" in (msg["content"] or "")
+
+
+# ---------------------------------------------------------------------------
+# The real Nemesis client (NEMESIS-AGENT/providers/nemapi_v3.py)
+# ---------------------------------------------------------------------------
+# What the real client does, turn after turn:
+#   * turn 1 — the system prompt is merged into the first user message
+#              ("[SYSTEM INSTRUCTIONS]…[USER MESSAGE]…"), then never sent
+#              again (the provider keeps ``_prompt_sent``);
+#   * turn 2+ — a single message, no system prompt, no tools array, and the
+#              User-Agent is the default one of the ``requests`` library.
+# So the prompt marker only identifies the agent on the FIRST request: the
+# discussion it opened must remember it.
+
+REAL_NEMESIS_UA = {"User-Agent": "python-requests/2.32.3"}
+
+
+@pytest.mark.anyio
+async def test_the_real_client_stays_in_its_mode_after_the_first_turn(server):
+    """Turn 1 is recognised by the prompt marker, turn 2 by the discussion."""
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
+        await c.post("/settings", json={"fresh_chat": True})
+        await _configure(c)
+        # turn 1 — the system prompt is merged into the first user message
+        r = await c.post("/v1/chat/completions", json=_body(NEMESIS_FIRST_TURN), headers=REAL_NEMESIS_UA)
+        assert r.status_code == 200, r.text
+        assert ext.received[-1]["freshChat"] is False  # « Discussion unique »
+        # turn 2 — no system prompt any more, nothing identifies the agent
+        r = await c.post("/v1/chat/completions", json=_body({"role": "user", "content": "[TOOL RESULT]\nok"}),
+                         headers=REAL_NEMESIS_UA)
+        assert r.status_code == 200, r.text
+        assert ext.received[-1]["freshChat"] is False  # still the same discussion
+        reason = _nemesis((await c.get("/agent-integrations")).json())["detected"]["reason"]
+        assert reason == "discussion de l'agent"
+        assert (await c.get("/agent-integrations")).json()["discussion_owners"] == {"qwen": "nemesis"}
+
+
+@pytest.mark.anyio
+async def test_the_discussion_owner_is_forgotten_when_the_context_is_reset(server):
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
+        await _configure(c)
+        await c.post("/v1/chat/completions", json=_body(NEMESIS_FIRST_TURN), headers=REAL_NEMESIS_UA)
+        assert (await c.get("/agent-integrations")).json()["discussion_owners"] == {"qwen": "nemesis"}
+        await c.post("/sessions/reset")
+        assert (await c.get("/agent-integrations")).json()["discussion_owners"] == {}
+
+
+@pytest.mark.anyio
+async def test_a_request_that_contradicts_the_owner_is_not_attributed_to_it(server):
+    """A request carrying a tools array is not Nemesis (it never sends one):
+    it must not inherit the agent's mode."""
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "Read a file.",
+                                               "parameters": {"type": "object", "properties": {}}}}]
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
+        await c.post("/settings", json={"fresh_chat": True})
+        await _configure(c)
+        await c.post("/v1/chat/completions", json=_body(NEMESIS_FIRST_TURN), headers=REAL_NEMESIS_UA)
+        r = await c.post("/v1/chat/completions", json=_body({"role": "user", "content": "hi"}, tools=tools),
+                         headers=REAL_NEMESIS_UA)
+        assert r.status_code == 200, r.text
+        assert "You can call tools" in ext.received[-1]["question"]  # classic contract
+        assert ext.received[-1]["freshChat"] is True  # classic discussion
+
+
+@pytest.mark.anyio
+async def test_the_client_cannot_ask_for_a_new_discussion(server):
+    """``fresh_chat`` is not part of the OpenAI body any more: it is ignored."""
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
+        await c.post("/settings", json={"fresh_chat": True})
+        await _configure(c)
+        r = await c.post("/v1/chat/completions", json=_body(NEMESIS_FIRST_TURN, fresh_chat=True),
+                         headers=NEMESIS_HEADERS)
+        assert r.status_code == 200, r.text
+        assert ext.received[-1]["freshChat"] is False

@@ -24,6 +24,11 @@ const fmtCost = (cost) => {
   if (c < 1) return "$" + c.toFixed(4);
   return "$" + c.toFixed(2);
 };
+const fmtDate = (iso) => {
+  const d = new Date(iso + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+};
 
 const PCOLORS = { deepseek: "#4F8CFF", qwen: "#22d3ee", claude: "#F59E0B", gemini: "#F87171", chatgpt: "#10A37F", kimi: "#A855F7", zai: "#6366F1" };
 const PNAMES = { deepseek: "DeepSeek", qwen: "Qwen", claude: "Claude", gemini: "Gemini", chatgpt: "ChatGPT", kimi: "Kimi", zai: "Z.ai" };
@@ -66,9 +71,23 @@ const ICONS = {
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
   refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/>',
   pulse: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  layers: '<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>',
+  terminal: '<path d="M4 17l6-6-6-6"/><path d="M12 19h8"/>',
+  zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>',
+  gauge: '<path d="M12 14l4-4"/><path d="M3.5 18a9 9 0 1 1 17 0"/><circle cx="12" cy="18" r="1.5"/>',
+  sparkles: '<path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z"/>',
+  arrowUp: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  arrowDown: '<path d="M12 5v14M5 12l7 7 7-7"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>',
 };
-const icon = (name, cls = "ico") =>
-  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+/* The "ico" class is always present: it carries the default size. A call
+ * site may add its own class, never remove it. */
+const icon = (name, cls = "") =>
+  `<svg class="ico${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 
 /* ---------------------------------------------------------------- navigation (single source) */
 const NAV = [
@@ -136,18 +155,25 @@ function renderShell() {
   const top = document.querySelector(".topbar");
   if (top) {
     top.innerHTML = `
-      <button class="icon-btn menu-btn" type="button" aria-label="Menu">${icon("menu", "")}</button>
+      <button class="icon-btn menu-btn" type="button" aria-label="Ouvrir le menu">${icon("menu", "")}</button>
       <div class="crumb">NemApi / <b>${esc(title)}</b></div>
       <div class="spacer"></div>
       <div class="pill" title="État de l'extension navigateur"><i id="hdot" class="dot"></i><span id="hconn">Connexion…</span></div>
       <button class="icon-btn" id="theme-btn" type="button" aria-label="Changer de thème" title="Thème clair / sombre"></button>`;
   }
   const content = document.querySelector(".content");
-  if (content && !$("offline-banner")) {
-    content.insertAdjacentHTML("afterbegin", `<div class="offline-banner" id="offline-banner">${icon("warn", "")}<span>Proxy NemApi injoignable — nouvelle tentative automatique…</span></div>`);
+  if (content) {
+    if (!$("offline-banner")) {
+      content.insertAdjacentHTML("afterbegin", `<div class="offline-banner" id="offline-banner">${icon("warn", "")}<span>Proxy NemApi injoignable — nouvelle tentative automatique…</span></div>`);
+    }
+    content.setAttribute("id", content.id || "main-content");
+    content.setAttribute("tabindex", "-1");
   }
   if (!document.querySelector(".overlay")) document.body.insertAdjacentHTML("beforeend", '<div class="overlay"></div>');
   if (!$("toasts")) document.body.insertAdjacentHTML("beforeend", '<div id="toasts" aria-live="polite"></div>');
+  if (!$("skip-link")) {
+    document.body.insertAdjacentHTML("afterbegin", '<a class="skip-link" href="#main-content">Aller au contenu principal</a>');
+  }
 
   let theme = "dark";
   try { theme = localStorage.getItem("nemapi-theme") || "dark"; } catch (_) {}
@@ -273,6 +299,55 @@ function bindSwitch(id, save, { onDone } = {}) {
       el.disabled = false;
     }
   });
+}
+
+/* ---------------------------------------------------------------- charts (SVG, no dependency) */
+/* An area chart of the daily history. The values are also written as a table
+ * below the chart by the pages that need it: a chart alone is not readable
+ * by a screen reader. */
+function areaChart(days, { value = "requests", width = 720, height = 200, label = "Requêtes" } = {}) {
+  const rows = days || [];
+  const data = rows.map((d) => Number(d[value]) || 0);
+  if (!data.length || data.every((v) => v === 0)) {
+    return `<div class="chart-empty">${icon("activity", "")}<span>Aucune donnée sur la période.</span></div>`;
+  }
+  const pad = { top: 16, right: 8, bottom: 26, left: 42 };
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+  const max = Math.max(...data, 1);
+  const step = data.length > 1 ? w / (data.length - 1) : w;
+  const x = (i) => pad.left + i * step;
+  const y = (v) => pad.top + h - (v / max) * h;
+  const points = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const line = points.join(" ");
+  const area = `${pad.left},${pad.top + h} ${line} ${x(data.length - 1).toFixed(1)},${pad.top + h}`;
+
+  const ticks = [0, Math.round(max / 2), max];
+  const grid = ticks.map((t) =>
+    `<line class="grid-line" x1="${pad.left}" x2="${pad.left + w}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}"/>` +
+    `<text class="axis-text" x="${pad.left - 8}" y="${(y(t) + 4).toFixed(1)}" text-anchor="end">${fmtNum(t)}</text>`).join("");
+
+  const every = Math.ceil(data.length / 7);
+  const xlabels = rows.map((d, i) => (i % every === 0 || i === data.length - 1)
+    ? `<text class="axis-text" x="${x(i).toFixed(1)}" y="${height - 6}" text-anchor="middle">${fmtDate(d.date)}</text>` : "").join("");
+
+  const dots = rows.map((d, i) =>
+    `<circle class="point-hit" cx="${x(i).toFixed(1)}" cy="${y(data[i]).toFixed(1)}" r="12" tabindex="0"
+       aria-label="${esc(d.date)} : ${fmtNum(data[i])} ${esc(label)}"><title>${esc(d.date)} — ${fmtNum(data[i])} ${esc(label)}</title></circle>` +
+    `<circle class="point" cx="${x(i).toFixed(1)}" cy="${y(data[i]).toFixed(1)}" r="3.4"/>`).join("");
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img"
+      aria-label="${esc(label)} par jour sur ${data.length} jours" preserveAspectRatio="none">
+    <defs><linearGradient id="nemapi-area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <polygon class="series-area" points="${area}"/>
+    <polyline class="series-line" points="${line}"/>
+    ${dots}
+    ${xlabels}
+  </svg>`;
 }
 
 /* ---------------------------------------------------------------- shared status */

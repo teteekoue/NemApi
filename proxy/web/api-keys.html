@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Clés API</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.2.0">
+<link rel="stylesheet" href="/admin.css?v=5.3.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="api-keys" data-title="Clés API">
@@ -48,22 +48,38 @@
         <div id="api-keys-list"><div class="skeleton" style="height:64px"></div></div>
       </div>
 
-      <div class="callout">
+      <div class="callout mb">
         <span id="use-ico"></span>
         <div>Les clients envoient la clé dans l'en-tête <code>Authorization: Bearer &lt;clé&gt;</code> (ou <code>X-API-Key</code>).
-          Pour Qwen Code : <code>OPENAI_API_KEY=&lt;clé&gt;</code>.</div>
+          Pour Qwen Code : <code>OPENAI_API_KEY=&lt;clé&gt;</code>. Pour Nemesis : <code>nemapi.token</code> dans son
+          <code>config.yaml</code>.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div><h3 id="h-usage">Exemple d’utilisation</h3><p class="desc">Exemple complet, avec la clé et l'agent déclaré.</p></div></div>
+        <pre class="session-box mono" id="keys-curl" style="white-space:pre-wrap;margin:0"></pre>
       </div>
     </main>
   </div>
 </div>
 
-<script src="/admin.js?v=5.2.0"></script>
+<script src="/admin.js?v=5.3.0"></script>
 <script>
 "use strict";
 $("h-protect").insertAdjacentHTML("afterbegin", icon("shield"));
 $("h-new").insertAdjacentHTML("afterbegin", icon("plus"));
 $("h-list").insertAdjacentHTML("afterbegin", icon("keys"));
+$("h-usage").insertAdjacentHTML("afterbegin", icon("terminal"));
 $("use-ico").outerHTML = icon("info", "");
+
+$("keys-curl").textContent = [
+  `curl ${location.origin}/v1/chat/completions \\`,
+  `  -H "Content-Type: application/json" \\`,
+  `  -H "Authorization: Bearer <ta-clé>" \\`,
+  `  -H "X-NemApi-Agent: qwen-code" \\   # facultatif : déclare l'agent`,
+  `  -d '{"model":"deepseek-chat",`,
+  `       "messages":[{"role":"user","content":"Bonjour"}]}'`,
+].join("\n");
 
 let keys = [];
 const mask = (k) => (k ? k.slice(0, 12) + "…" + k.slice(-4) : "—");

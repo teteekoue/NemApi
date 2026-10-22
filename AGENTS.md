@@ -363,24 +363,45 @@ composer — **pas** sur `document.body`) reste le repli des sites sans input.
 | `user_agents` | préfixes de `User-Agent` (Qwen Code : `QwenCode/`) |
 | `prompt_markers` | fragments du prompt système de l'agent |
 | `features` | les fonctions de l'intégration, chacune activable seule |
+| `header` | la valeur de `X-NemApi-Agent` que l'agent doit envoyer |
+| `native_tools_only` | l'agent n'envoie jamais de tableau `tools` (Nemesis) |
 | `snippet` | la configuration à copier, `{base}` = l'URL de base de NemApi |
 
 La détection est faite **à chaque requête**, dans cet ordre : en-tête
 `X-NemApi-Agent` (prioritaire, une autre valeur force le mode classique) →
-`User-Agent` → prompt système. Elle ne s'applique qu'aux requêtes de cet
-agent : les autres clients (Chat test, scripts) restent en mode classique.
+`User-Agent` → prompt système → **discussion attribuée**. Elle ne
+s'applique qu'aux requêtes de cet agent : les autres clients (Chat test,
+scripts) restent en mode classique.
 
-**Qwen Code** : contexte incrémental, requêtes annexes locales, suite des
-réponses coupées, keep-alive.
+**Le corps de la requête est strictement OpenAI** (`schemas.py`) : `model`,
+`messages`, `tools`/`functions`, `stream`. Ni `fresh_chat` ni `provider` —
+un client qui les envoie est **ignoré, pas obéi**. Le fournisseur est déduit
+du `model`. C'est un invariant : une variable de comportement dans le corps
+lierait chaque client à un dialecte NemApi et casserait le « un protocole
+pour tout le monde ».
+
+**Qui ouvre une nouvelle discussion ?** Jamais le client. Le proxy décide :
+le réglage global *sauf* si l'intégration a `persistent_chat` ou
+`incremental_context` (alors `job.fresh_chat = False`).
+
+**Qwen Code** — les trois points bloquants sont trois fonctions séparées,
+chacune activable seule :
+
+| Fonction | Rôle |
+|---|---|
+| `persistent_chat` | plus de nouvelle URL : la discussion ne se rouvre jamais |
+| `incremental_context` | le contexte est géré dans la discussion (§4.6) |
+| `tool_calls` | le tableau `tools` OpenAI est transmis au modèle avec son contrat, la réponse revient en `tool_calls` |
+
+plus `side_queries_local`, `continuation` et `keepalive`.
 
 **Nemesis** ([NEMESIS-AGENT](https://github.com/teteekoue/NEMESIS-AGENT)) :
-`persistent_chat` (la requête n'ouvre jamais une nouvelle discussion — le
-`fresh_chat` du client et le réglage global sont ignorés) et
+`persistent_chat` (la requête n'ouvre jamais une nouvelle discussion) et
 `native_tool_calls` (les appels d'outils de l'agent deviennent des
 `tool_calls` OpenAI, et le contrat d'outils de NemApi n'est **pas** injecté :
 l'agent a le sien).
 
-Deux détails qui ne se devinent pas :
+Quatre détails qui ne se devinent pas :
 
 - **Nemesis fusionne son prompt système dans le premier message
   `user`** (« `[SYSTEM INSTRUCTIONS]` … »), pas dans un message `system` :
@@ -392,6 +413,15 @@ Deux détails qui ne se devinent pas :
   explicite (`tool` / `action` / `tool_name` + un objet d'arguments). La
   barre est haute exprès : une réponse contient souvent un extrait JSON, et
   un extrait ne doit jamais être avalé comme un appel.
+- **Nemesis n'envoie son prompt système qu'une fois.** Le marqueur ne
+  permet donc de le reconnaître qu'au **premier** tour ; ensuite il reviendrait
+  au mode classique et rouvrirait une discussion vide à chaque requête.
+  D'où les deux parades : l'**en-tête** `X-NemApi-Agent: nemesis` (recommandé,
+  patch client dans `docs/nemesis-nemapi.patch`) et la **discussion attribuée**.
+- **La discussion attribuée** (`config.discussion_owners`) : un agent qui
+  ne rouvre jamais de discussion en garde la propriété. Les requêtes
+  suivantes, sans signal, lui sont attribuées — sauf si elles portent un
+  tableau `tools` (`native_tools_only`), ce qui trahirait un autre client.
 
 Pas de contexte incrémental pour Nemesis : il n'envoie que le message
 courant, son contexte est de son côté.
@@ -418,6 +448,31 @@ est **positionnelle** (comparaison de l'historique et de la vue), pas par
 similarité de texte : un message utilisateur identique légitime (« continue »
 tapé deux fois) doit être renvoyé deux fois, une reprise identique ne doit
 l'être pas.
+
+### 4.7 L'interface web et les tarifs de référence
+
+`proxy/web/` : HTML + CSS + JS, **sans build ni dépendance**. C'est un
+choix : le proxy est local, il doit démarrer sans `npm install` et sans
+réseau.
+
+- **`admin.css`** est le design system : jetons (couleur, espace, rayon,
+  ombre, mouvement) d'abord, puis le shell, puis les composants. Un
+  composant qui n'utilise pas les jetons est une dette.
+- **`admin.js`** est le shell commun (menu, barre du haut, `api()`, `poll()`,
+  toasts, modales) plus quelques helpers de rendu (`areaChart()`).
+- **Toute icône SVG porte la classe `ico`**, qui porte la taille par
+  défaut. Un SVG sans largeur occupe son conteneur : c'est le bug qui a
+  affiché des icônes de 200 px sur le tableau de bord.
+- Le thème clair et le thème sombre sont **définis ensemble** (jamais l'un
+  après l'autre) : le contraste se vérifie dans les deux.
+- `prefers-reduced-motion` coupe les animations.
+
+**Les tarifs de référence** (`core/providers.py:TOKEN_PRICING`) sont les
+prix API publics vérifiés sur les pages tarifaires officielles
+(`PRICING_SOURCES`). Ils servent à estimer le « coût équivalent » de
+l'usage — le pont local, lui, est gratuit. Un tarif qui n'est pas vérifié
+est une faute : la date de vérification (`PRICING_CHECKED_AT`) est affichée
+dans la page Analytics, elle doit être mise à jour avec les prix.
 
 ---
 
@@ -459,7 +514,7 @@ venv/bin/python -m pytest tests/test_extension_dom.py -q   # extension + Playwri
 venv/bin/python -m pytest tests/test_providers_attachments.py -q   # upload d'image, 7 fournisseurs
 ```
 
-État actuel : **256 tests passés, 0 échec, 0 ignoré**.
+État actuel : **268 tests passés, 0 échec, 0 ignoré**.
 
 Les tests de l'extension tournent dans un **vrai Chromium** (Playwright) via
 CDP, dans deux mondes : `base.js` dans un monde isolé, `page_bridge.js`
@@ -481,7 +536,16 @@ que si le texte ET l'image sont présents. Trois scénarios par fournisseur :
 Le DOM de chaque scénario est celui du vrai site (§4.3.2) : un sélecteur
 qui dérive est attrapé ici. `tests/test_nemesis_integration.py` vérifie le
 profil NEMESIS (détection, discussion unique, appels d'outils natifs,
-absence de contexte incrémental).
+absence de contexte incrémental) **et le trajet du vrai client** : le
+premier tour est reconnu par le prompt système, les suivants par la
+discussion attribuée, une requête qui porte un tableau `tools` n'hérite
+pas du mode de l'agent.
+
+`tests/test_web_ui.py` ouvre les six pages dans un vrai Chromium : aucune
+erreur JavaScript, **aucune icône SVG sans la classe `ico`** (un SVG sans
+largeur occupe son conteneur), les prix de référence affichés avec leur
+date de vérification, et la carte de chaque agent qui explique comment
+NemApi le reconnaît.
 
 Dépendances de test nécessaires (sinon les tests sont *ignorés*, pas échoués) :
 

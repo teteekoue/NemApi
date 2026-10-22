@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Tableau de bord</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.2.0">
+<link rel="stylesheet" href="/admin.css?v=5.3.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="dashboard" data-title="Tableau de bord">
@@ -19,19 +19,31 @@
           <h1>Tableau de bord</h1>
           <div class="sub">Vue d'ensemble du pont API local : extension, fournisseurs, mode de fonctionnement et activité.</div>
         </div>
+        <div class="page-actions">
+          <a class="btn btn-sm" href="/chat">Ouvrir le chat test</a>
+          <a class="btn btn-sm btn-primary" href="/integrations">Configurer les agents</a>
+        </div>
       </div>
 
       <div class="grid g4 mb">
-        <div class="card stat"><div class="label">Requêtes <span id="ico-req"></span></div><div class="value" id="st-requests">—</div><div class="trend">historique persisté</div></div>
-        <div class="card stat"><div class="label">Tokens <span id="ico-tok"></span></div><div class="value" id="st-tokens">—</div><div class="trend">prompt + complétion (estimés)</div></div>
-        <div class="card stat"><div class="label">Uptime <span id="ico-up"></span></div><div class="value" id="st-uptime">—</div><div class="trend">proxy actif</div></div>
-        <div class="card stat"><div class="label">Fournisseurs prêts <span id="ico-prov"></span></div><div class="value" id="st-ready">—</div><div class="trend" id="st-read">onglets sélectionnés</div></div>
+        <div class="card stat"><div class="label">Requêtes <span id="ico-req"></span></div><div class="value" id="st-requests">—</div>
+          <div class="trend">historique persisté</div></div>
+        <div class="card stat"><div class="label">Tokens <span id="ico-tok"></span></div><div class="value" id="st-tokens">—</div>
+          <div class="trend">prompt + complétion (estimés)</div></div>
+        <div class="card stat"><div class="label">Uptime <span id="ico-up"></span></div><div class="value" id="st-uptime">—</div>
+          <div class="trend">proxy actif</div></div>
+        <div class="card stat"><div class="label">Fournisseurs prêts <span id="ico-prov"></span></div><div class="value" id="st-ready">—</div>
+          <div class="trend" id="st-read">onglets sélectionnés</div></div>
       </div>
 
       <div class="grid g2 mb">
         <div class="card">
-          <div class="card-head"><div><h3 id="h-endpoint">Endpoint API</h3><p class="desc">Base URL compatible OpenAI à donner à tes agents et outils.</p></div></div>
-          <div class="copy-box"><code id="endpoint-url">http://127.0.0.1:8090/v1</code><button class="btn btn-sm" type="button" id="copy-endpoint">Copier</button></div>
+          <div class="card-head"><div><h3 id="h-endpoint">Endpoint API</h3><p class="desc">Base URL compatible OpenAI à donner à tes agents et outils.</p></div>
+            <button class="btn btn-sm" type="button" id="copy-endpoint">Copier</button></div>
+          <div class="copy-box"><code id="endpoint-url">http://127.0.0.1:8090/v1</code></div>
+          <p class="hint" style="margin:12px 0 0">Le corps des requêtes est <b>strictement OpenAI</b> : ni
+            <code>fresh_chat</code>, ni option propriétaire. Le mode de discussion se règle dans
+            <a href="/config">Configuration</a> ou dans <a href="/integrations">Intégration agents IA</a>.</p>
         </div>
         <div class="card">
           <div class="card-head"><div><h3 id="h-mode">Mode de fonctionnement</h3><p class="desc">Classique par défaut ; les intégrations s'appliquent aux requêtes de leur agent.</p></div>
@@ -54,17 +66,18 @@
   </div>
 </div>
 
-<script src="/admin.js?v=5.2.0"></script>
+<script src="/admin.js?v=5.3.0"></script>
 <script>
 "use strict";
-$("ico-req").outerHTML = icon("check", "");
-$("ico-tok").outerHTML = icon("coins", "");
-$("ico-up").outerHTML = icon("clock", "");
-$("ico-prov").outerHTML = icon("users", "");
-$("h-endpoint").insertAdjacentHTML("afterbegin", icon("link"));
-$("h-mode").insertAdjacentHTML("afterbegin", icon("agents"));
-$("h-prov").insertAdjacentHTML("afterbegin", icon("tabs"));
-$("h-logs").insertAdjacentHTML("afterbegin", icon("log"));
+$("ico-req").insertAdjacentHTML("afterbegin", icon("check"));
+$("ico-tok").insertAdjacentHTML("afterbegin", icon("coins"));
+$("ico-up").insertAdjacentHTML("afterbegin", icon("clock"));
+$("ico-prov").insertAdjacentHTML("afterbegin", icon("users"));
+$("h-endpoint").insertAdjacentHTML("afterbegin", icon("link", ""));
+$("h-mode").insertAdjacentHTML("afterbegin", icon("agents", ""));
+$("h-prov").insertAdjacentHTML("afterbegin", icon("tabs", ""));
+$("h-logs").insertAdjacentHTML("afterbegin", icon("log", ""));
+
 const endpoint = `${location.origin}/v1`;
 $("endpoint-url").textContent = endpoint;
 $("copy-endpoint").addEventListener("click", () => copyText(endpoint, "Endpoint copié"));

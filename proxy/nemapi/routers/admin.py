@@ -112,5 +112,6 @@ async def sessions(ctx: AppContext = Depends(get_ctx)):
 @router.post("/sessions/reset")
 async def sessions_reset(ctx: AppContext = Depends(get_ctx)):
     n = ctx.sessions.reset()
+    ctx.integrations.forget_owners()  # the discussions are forgotten too
     ctx.logs.info(f"Contexte incrémental: {n} session(s) réinitialisée(s)")
     return {"ok": True, "reset": n}

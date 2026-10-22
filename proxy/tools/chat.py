@@ -85,26 +85,32 @@ def print_message(role, content, provider=None):
     print(f"{prefix}: {content}")
 
 
-def send_request(model, messages, stream=False, provider=None):
+def send_request(model, messages, stream=False):
     """
     Envoie une requete a l'API NemApi.
-    
+
     Args:
         model: Modele a utiliser (ex: "qwen-plus" ou "qwen/qwen-plus")
         messages: Liste de dictionnaires avec 'role' et 'content'
         stream: Si True, utilise le streaming (non implemente ici pour simplicite)
-        provider: Fournisseur (optionnel, deduit du model si non specifie)
-    
+
     Returns:
         str: La reponse de l'assistant
     """
     url = f"{BASE_URL}/v1/chat/completions"
-    
+
+    # Corps strictement OpenAI : le fournisseur est deduit du modele.
     payload = {
         "model": model,
         "messages": messages,
         "stream": stream,
     }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-NemApi-Agent": AGENT_ID,  # utilise l'integration Qwen Code si elle est activee
+    }
+
     if provider:
         payload["provider"] = provider
     

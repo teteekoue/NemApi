@@ -31,8 +31,12 @@ async def test_validation_errors(server):
         assert r.status_code == 400
         r = await c.post("/v1/chat/completions", json={"model": "qwen-chat", "messages": [{"role": "user", "content": "  "}]})
         assert r.status_code == 400 and "empty prompt" in r.json()["error"]["message"]
+        r = await c.post("/v1/chat/completions", json={"model": "x", "messages": MSG})
+        assert r.status_code == 400 and "Unknown model" in r.json()["error"]["message"]
+        # the body is OpenAI: a "provider" field is ignored, not obeyed
         r = await c.post("/v1/chat/completions", json={"model": "x", "provider": "nope", "messages": MSG})
-        assert r.status_code == 400 and "Unknown provider" in r.json()["error"]["message"]
+        assert r.status_code == 400 and "Unknown model" in r.json()["error"]["message"]
+
 
 
 async def test_extension_offline_503(server):
@@ -253,14 +257,44 @@ async def test_stop_cancels_everything(server):
             gate.set()
 
 
-async def test_fresh_chat_per_request_override(server):
+async def test_the_body_cannot_decide_the_discussion(server):
+    """The request body is strictly OpenAI: no ``fresh_chat`` field.
+
+    Whether a request opens a new web discussion is decided by the proxy
+    (global setting + agent integration), never by the client. A client that
+    sends the field anyway is ignored, not obeyed."""
     async with FakeExtension(server.url) as ext:
         async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
             await c.post("/v1/chat/completions", json={"model": "qwen", "messages": MSG, "fresh_chat": False})
             await c.post("/settings", json={"fresh_chat": False})
             await c.post("/v1/chat/completions", json={"model": "qwen", "messages": [{"role": "user", "content": "2"}]})
             await c.post("/v1/chat/completions", json={"model": "qwen", "messages": [{"role": "user", "content": "3"}], "fresh_chat": True})
-        assert [j["freshChat"] for j in ext.received] == [False, False, True]
+        # the first request: the global setting (fresh chat on) applies
+        # the second and third: the global setting is off, and the field the
+        # client sent is ignored
+        assert [j["freshChat"] for j in ext.received] == [True, False, False]
+
+
+async def test_the_request_body_is_strictly_openai(server):
+    """No NemApi-specific field is read from the body: the schema holds the
+    OpenAI fields and nothing else."""
+    from nemapi.schemas import ChatCompletionRequest
+
+    fields = set(ChatCompletionRequest.model_fields)
+    assert fields == {"model", "messages", "tools", "functions", "stream"}
+
+    # a client that sends the old fields anyway is not obeyed
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=10) as c:
+        r = await c.post("/v1/chat/completions", json={
+            "model": "qwen-chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            "fresh_chat": False,
+            "provider": "claude",
+            "temperature": 0.7,
+        })
+        assert r.status_code == 200, r.text
+    # the model decides the provider, not the "provider" field
+    assert ext.received[-1]["provider"] == "qwen"
 
 
 async def test_long_poll_wakes_immediately(server):

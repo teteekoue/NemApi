@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from virtual_agent import TASK_1, VirtualCodingAgent, WebUIExtension  # noqa: E402
 
 PAGES = ["/", "/config", "/integrations", "/chat", "/analytics", "/api-keys-page"]
-FEATURES = ("incremental_context", "side_queries_local", "continuation", "keepalive")
+FEATURES = ("persistent_chat", "incremental_context", "tool_calls",
+            "side_queries_local", "continuation", "keepalive")
 
 
 async def _get(url, path):
@@ -244,3 +245,67 @@ async def _count(page, selector):
 
 async def _no_text(locator, needle):
     return needle not in (await locator.inner_text())
+
+
+@pytest.mark.anyio
+async def test_every_icon_is_sized(server, browser_page):
+    """An SVG with no width fills its container: every icon must carry the
+    "ico" class, which carries the default size."""
+    page = browser_page
+    async with WebUIExtension(server.url):
+        for path in PAGES:
+            await page.goto(server.url + path)
+            await page.locator(".sidebar .nav a").first.wait_for()
+            await page.wait_for_timeout(400)
+            sizes = await page.evaluate("""() => {
+              const out = [];
+              for (const svg of document.querySelectorAll("svg")) {
+                const r = svg.getBoundingClientRect();
+                if (r.width > 40 || r.height > 40) {
+                  out.push({cls: svg.getAttribute("class"), w: Math.round(r.width), h: Math.round(r.height)});
+                }
+              }
+              return out;
+            }""")
+            assert not sizes, (path, sizes)
+
+
+@pytest.mark.anyio
+async def test_the_analytics_page_shows_the_reference_prices(server, browser_page):
+    """The pricing table carries the cache price, the source and the date the
+    prices were checked on."""
+    page = browser_page
+    async with WebUIExtension(server.url):
+        await page.goto(server.url + "/analytics")
+        await page.locator("#pricing-body tr").first.wait_for()
+        rows = await page.locator("#pricing-body tr").count()
+        assert rows == 7, rows
+        text = await page.locator("#pricing-body").inner_text()
+        assert "DeepSeek V4-Pro" in text and "GLM-5.3" in text
+        assert "$0.00066" in text  # DeepSeek input / 1K
+        assert "$0.00002" in text  # its cached input / 1K
+        checked = await page.locator("#price-date").inner_text()
+        assert checked and checked != "—"
+        # the daily chart is drawn from the history
+        await page.locator("#trend-chart").wait_for()
+        assert await page.locator("#trend-chart svg.chart, #trend-chart .chart-empty").count() == 1
+
+
+@pytest.mark.anyio
+async def test_the_integrations_page_explains_how_the_agent_is_recognised(server, browser_page):
+    page = browser_page
+    async with WebUIExtension(server.url):
+        await page.goto(server.url + "/integrations")
+        await page.locator("#int-qwen-code-enabled").wait_for(state="attached")
+        await page.wait_for_timeout(400)
+        for agent in ("qwen-code", "nemesis"):
+            card = page.locator(f'[data-agent="{agent}"]')
+            text = (await card.inner_text()).lower()
+            assert "x-nemapi-agent" in text, agent
+            # the section title is uppercased by CSS, hence the lower-case comparison
+            assert "comment nemapi le reconnaît" in text, agent
+        # the three things Qwen Code must get right are named as features
+        qwen = await page.locator('[data-agent="qwen-code"] .features').inner_text()
+        assert "Plus de nouvelle URL" in qwen
+        assert "Contexte incrémental" in qwen
+        assert "Appels d'outils" in qwen

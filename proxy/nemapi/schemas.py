@@ -11,14 +11,28 @@ class _Lenient(BaseModel):
 
 
 class ChatCompletionRequest(_Lenient):
+    """Body of POST /v1/chat/completions.
+
+    Strictly OpenAI: ``model``, ``messages``, ``tools``/``functions``,
+    ``stream``. Unknown fields are accepted and ignored, so any OpenAI
+    client works — but nothing NemApi-specific is read from the body.
+
+    In particular there is **no** ``fresh_chat`` field any more: whether a
+    request opens a new web discussion is decided by the proxy (global
+    setting + the agent integration), never by the client. A behavioural
+    flag in the body would tie every client to a NemApi dialect and would
+    break the "one protocol for everyone" rule.
+
+    The provider is deduced from the model, like every OpenAI-compatible
+    gateway does (``deepseek-chat`` → DeepSeek, ``qwen-plus`` → Qwen…). A
+    ``provider`` field, if a client sends one, is ignored.
+    """
+
     model: Optional[str] = None
-    provider: Optional[str] = None
     messages: Optional[List[Any]] = None
     tools: Optional[Any] = None
     functions: Optional[Any] = None
     stream: Optional[bool] = None
-    # NemApi extension: per-request override of the global fresh-chat setting.
-    fresh_chat: Optional[bool] = None
 
 
 class JobResult(_Lenient):

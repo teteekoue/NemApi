@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Intégration agents IA</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.2.0">
+<link rel="stylesheet" href="/admin.css?v=5.3.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="integrations" data-title="Intégration agents IA">
@@ -25,8 +25,9 @@
 
       <div class="callout mb" id="how-it-works">
         <span id="how-ico"></span>
-        <div>NemApi reconnaît l'agent à <b>chaque requête</b> (en-tête <code>X-NemApi-Agent</code>, User-Agent ou
-          prompt système). Une intégration activée ne s'applique qu'aux requêtes de <b>son</b> agent : les autres
+        <div>NemApi reconnaît l'agent à <b>chaque requête</b> : en-tête <code>X-NemApi-Agent</code> (recommandé),
+          sinon User-Agent, sinon prompt système. Le corps de la requête reste <b>strictement OpenAI</b> — aucune
+          variable propriétaire. Une intégration activée ne s'applique qu'aux requêtes de <b>son</b> agent : les autres
           clients (Chat test, scripts, autres outils) restent en mode classique.</div>
       </div>
 
@@ -41,24 +42,33 @@
           </table></div>
         </div>
         <div class="card">
-          <div class="card-head"><div><h3 id="h-more">Autres agents</h3><p class="desc">La liste s'agrandira au fil des versions.</p></div></div>
-          <p class="muted" style="margin:0 0 10px">Chaque nouvel agent (Cline, Claude Code, Codex CLI, Aider…) aura sa
-            propre intégration, <b>désactivée par défaut</b>.</p>
-          <p class="muted small" style="margin:0">En attendant, un agent non listé fonctionne en mode classique : active
-            « Nouvelle discussion à chaque requête » dans <a href="/config">Configuration</a> pour éviter que le
-            contexte s'empile dans le chat web.</p>
+          <div class="card-head"><div><h3 id="h-owner">Discussions attribuées</h3><p class="desc">Discussion web dont chaque agent est le propriétaire.</p></div></div>
+          <div id="owners"><div class="empty">Aucune discussion attribuée.</div></div>
+          <p class="hint" style="margin:16px 0 0">Un agent qui ne rouvre jamais de discussion en garde la propriété :
+            les requêtes suivantes, même sans signal, restent dans son mode. C'est ce qui permet à Nemesis
+            (qui n'envoie son prompt système qu'une fois) de continuer dans la bonne discussion.</p>
         </div>
+      </div>
+
+      <div class="card mt">
+        <div class="card-head"><div><h3 id="h-more">Autres agents</h3><p class="desc">La liste s'agrandira au fil des versions.</p></div></div>
+        <p class="muted" style="margin:0 0 10px">Chaque nouvel agent (Cline, Claude Code, Codex CLI, Aider…) aura sa
+          propre intégration, <b>désactivée par défaut</b>.</p>
+        <p class="muted small" style="margin:0">En attendant, un agent non listé fonctionne en mode classique : active
+          « Nouvelle discussion à chaque requête » dans <a href="/config">Configuration</a> pour éviter que le
+          contexte s'empile dans le chat web.</p>
       </div>
     </main>
   </div>
 </div>
 
-<script src="/admin.js?v=5.2.0"></script>
+<script src="/admin.js?v=5.3.0"></script>
 <script>
 "use strict";
 $("how-ico").outerHTML = icon("info", "");
-$("h-clients").insertAdjacentHTML("afterbegin", icon("users"));
-$("h-more").insertAdjacentHTML("afterbegin", icon("plus"));
+$("h-clients").insertAdjacentHTML("afterbegin", icon("users", ""));
+$("h-owner").insertAdjacentHTML("afterbegin", icon("layers", ""));
+$("h-more").insertAdjacentHTML("afterbegin", icon("plus", ""));
 
 const base = `${location.origin}/v1`;
 let structureKey = "";
@@ -73,10 +83,21 @@ function snippetOf(agent) {
   return raw.replaceAll("{base}", base);
 }
 
+function identifierList(a) {
+  const ids = a.identifiers || [];
+  if (!ids.length) return "";
+  const kindLabel = { header: "en-tête", "user-agent": "user-agent", prompt: "prompt" };
+  return `<div class="section-title">Comment NemApi le reconnaît</div>
+    <div class="ident-list">${ids.map((i) => `<div class="ident">
+      <span class="kind">${esc(kindLabel[i.kind] || i.kind)}</span>
+      <span class="value">${esc(i.value)}</span>
+      <span class="note">${esc(i.note || "")}</span></div>`).join("")}</div>`;
+}
+
 function agentCard(a) {
   const id = esc(a.id);
   const chips = a.features.map((f) =>
-    `<span class="chip" data-chip="${esc(f.id)}" title="${esc(f.label)}">${esc(f.tag || f.label)}</span>`).join("");
+    `<span class="chip" data-chip="${esc(f.id)}" title="${esc(f.description)}">${esc(f.tag || f.label)}</span>`).join("");
   return `<section class="card agent-card" data-agent="${id}">
     <div class="agent-top">
       <div class="agent-logo">${esc(initials(a.name))}</div>
@@ -103,6 +124,7 @@ function agentCard(a) {
             <label class="switch"><input type="checkbox" id="int-${id}-${esc(f.id)}"><span class="slider"></span></label>
           </div></div>`).join("")}
       </div>
+      ${identifierList(a)}
       <div class="section-title">Configurer ${esc(a.name)}</div>
       <p class="muted small" style="margin:4px 0 10px">${esc(a.setup)}</p>
       <div class="copy-box"><code id="int-${id}-url">${esc(base)}</code><button class="btn btn-sm" type="button" data-copy="${esc(base)}">Copier l'URL</button></div>
@@ -143,7 +165,7 @@ function updateAgent(a, sessions) {
   if (dot) dot.className = "dot " + (d.seconds_ago != null && d.seconds_ago < 120 ? "on" : "");
   setText(`int-${id}-detect`, d.requests
     ? `${a.name} détecté ${fmtAgo(d.seconds_ago)} (via ${d.reason}) · ${fmtNum(d.requests)} requête(s)${a.enabled ? "" : " — traitées en mode classique tant que l'intégration est désactivée"}`
-    : `${a.name} pas encore détecté. Lance-le avec la base URL ci-dessous.`);
+    : `${a.name} pas encore détecté. Lance-le avec la base URL ci-dessus.`);
   if (id === "qwen-code") {
     const inc = a.features.find((f) => f.id === "incremental_context");
     const reset = $("int-reset");
@@ -163,6 +185,21 @@ function updateAgent(a, sessions) {
       }
     }
   }
+}
+
+function renderOwners(owners, agents) {
+  const entries = Object.entries(owners || {});
+  if (!entries.length) {
+    setHTML("owners", '<div class="empty">Aucune discussion attribuée.</div>');
+    return;
+  }
+  const byId = Object.fromEntries((agents || []).map((a) => [a.id, a]));
+  setHTML("owners", entries.map(([pid, aid]) => {
+    const agent = byId[aid];
+    return `<div class="key-item"><div><div class="key-name">${providerBadge(pid)}</div>
+      <div class="key-meta">discussion ouverte par <b>${esc(agent ? agent.name : aid)}</b></div></div>
+      <span class="badge accent">${esc(agent ? agent.name : aid)}</span></div>`;
+  }).join(""));
 }
 
 function renderClients(clients) {
@@ -235,6 +272,7 @@ const refresher = poll(async () => {
   }
   for (const a of data.agents) updateAgent(a, data.sessions || {});
   renderClients(data.clients || []);
+  renderOwners(data.discussion_owners, data.agents);
 }, 2000);
 </script>
 </body>

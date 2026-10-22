@@ -1,0 +1,46 @@
+diff --git a/providers/nemapi_v3.py b/providers/nemapi_v3.py
+index 42e0f09..f4696c6 100644
+--- a/providers/nemapi_v3.py
++++ b/providers/nemapi_v3.py
+@@ -78,6 +78,12 @@ class NemapiV3Provider(BaseProvider):
+             or self.DEFAULT_MODEL
+         )
+         self.api_token = str(nv3_cfg.get("token") or "").strip()
++        # NemApi recognises the agent on every request through this header.
++        # Without it, the agent is only recognised on the first request (the
++        # one that carries the system prompt) and NemApi would fall back to
++        # its classic behaviour afterwards — a brand-new discussion per
++        # request, which loses the context Nemesis keeps on its side.
++        self.agent_id = str(nv3_cfg.get("agent") or "nemesis").strip()
+         
+         self._models_cache: List[Dict[str, Any]] = []
+         
+@@ -240,12 +246,6 @@ class NemapiV3Provider(BaseProvider):
+                     "model": self.model,
+                     "messages": [{"role": send_role, "content": send_content}],
+                     "stream": False,
+-                    # ALWAYS false: NemApi's ``fresh_chat`` makes the browser
+-                    # extension reload the provider page (a brand-new chat URL).
+-                    # NEMESIS must never trigger that reload — neither for a new
+-                    # conversation nor when resuming one. Conversation lifecycle
+-                    # is handled by the user on the NemApi side.
+-                    "fresh_chat": False,
+                 }
+                 resp = self._post_cancellable(payload, cancel_event)
+                 if resp is None:
+@@ -356,9 +356,12 @@ class NemapiV3Provider(BaseProvider):
+         return result.get("resp")
+ 
+     def _auth_headers(self) -> Dict[str, str]:
+-        if not self.api_token:
+-            return {}
+-        return {"Authorization": f"Bearer {self.api_token}"}
++        headers: Dict[str, str] = {}
++        if self.api_token:
++            headers["Authorization"] = f"Bearer {self.api_token}"
++        if self.agent_id:
++            headers["X-NemApi-Agent"] = self.agent_id
++        return headers
+ 
+     def _extract_reply(self, data: Any) -> str:
+         """Extrait le texte assistant, y compris tool_calls sérialisés."""

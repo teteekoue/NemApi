@@ -1,5 +1,7 @@
 """Admin UI, static files, settings persistence and API keys."""
 import json
+import time
+from datetime import date, timedelta
 
 import httpx
 
@@ -44,6 +46,67 @@ def test_status_and_stats_shape(server):
         assert stats["total_requests"] == 0 and "pricing" in stats and len(stats["providers"]) == 7
         assert c.get("/providers").json()["providers"][0]["id"] == "deepseek"
         assert c.post("/stats/clear").json()["ok"] is True
+
+
+def test_the_reference_prices_are_complete_and_cited(server):
+    """Every provider has an input, an output and a cache price, a label, a
+    remark and a source: the analytics page shows them all."""
+    from nemapi.core.providers import PRICING_CHECKED_AT, PRICING_SOURCES, PROVIDERS, TOKEN_PRICING
+
+    with httpx.Client(base_url=server.url) as c:
+        stats = c.get("/stats").json()
+    pricing = stats["pricing"]
+    assert set(pricing) == set(PROVIDERS) == set(TOKEN_PRICING)
+    assert stats["pricing_checked_at"] == PRICING_CHECKED_AT
+    for pid, entry in pricing.items():
+        assert entry["prompt_per_1k"] > 0, pid
+        assert entry["completion_per_1k"] > 0, pid
+        assert entry["cached_per_1k"] > 0, pid
+        assert entry["label"], pid
+        assert entry["note"], pid
+        assert entry["source"] == PRICING_SOURCES[pid], pid
+
+
+def test_the_stats_keep_a_daily_history(server):
+    """The analytics chart needs one bucket per day, with the empty days
+    filled in (a gap must read as "nothing that day")."""
+    from nemapi.services.stats import HISTORY_DAYS
+
+    with httpx.Client(base_url=server.url) as c:
+        stats = c.get("/stats").json()
+    days = stats["daily"]
+    assert len(days) == HISTORY_DAYS
+    assert stats["history_days"] == HISTORY_DAYS
+    assert [d["date"] for d in days] == sorted(d["date"] for d in days)
+    assert days[-1]["date"] == date.today().isoformat()
+    assert all(d["requests"] == 0 for d in days)
+
+
+def test_a_request_lands_in_the_daily_bucket(tmp_path):
+    """The counters and the daily bucket move together, and the history is
+    capped at HISTORY_DAYS days."""
+    from nemapi.services.logs import LogBuffer
+    from nemapi.services.stats import HISTORY_DAYS, StatsStore
+
+    store = StatsStore(tmp_path / "stats.json", LogBuffer())
+    store.record("deepseek", 1000, 200)
+    store.record("claude", 500, 100)
+    report = store.report(time.time(), "4.1")
+    today = report["daily"][-1]
+    assert today["requests"] == 2
+    assert today["prompt_tokens"] == 1500 and today["completion_tokens"] == 300
+    assert report["total_requests"] == 2
+    assert report["estimated_cost"] > 0
+
+    # an old day is dropped, the bucket of today is kept
+    old = (date.today() - timedelta(days=HISTORY_DAYS + 5)).isoformat()
+    store._data["daily"][old] = {"requests": 1, "prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0}
+    store.record("qwen", 10, 10)
+    days = store.report(time.time(), "4.1")["daily"]
+    assert old not in store._data["daily"]
+    assert len(days) == HISTORY_DAYS
+    assert all(d["requests"] == 0 for d in days[:-1])
+    assert days[-1]["requests"] == 3
 
 
 def test_settings_persist_across_restart(server_factory, tmp_path):

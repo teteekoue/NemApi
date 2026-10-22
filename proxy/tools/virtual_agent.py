@@ -79,7 +79,8 @@ QWEN_CODE_UA = "QwenCode/0.9.0 (linux; x64)"
 
 async def configure(base_url: str, *, integration: Optional[bool] = None, incremental: Optional[bool] = None,
                     side_queries_local: Optional[bool] = None, continuation: Optional[bool] = None,
-                    keepalive: Optional[bool] = None, **settings) -> dict:
+                    keepalive: Optional[bool] = None, persistent_chat: Optional[bool] = None,
+                    tool_calls: Optional[bool] = None, **settings) -> dict:
     """Set the proxy settings and the Qwen Code integration.
 
     ``incremental=True`` enables the integration with incremental context,
@@ -88,7 +89,9 @@ async def configure(base_url: str, *, integration: Optional[bool] = None, increm
         if settings:
             (await c.post("/settings", json=settings)).raise_for_status()
         features = {k: v for k, v in {"incremental_context": incremental, "side_queries_local": side_queries_local,
-                                      "continuation": continuation, "keepalive": keepalive}.items() if v is not None}
+                                      "continuation": continuation, "keepalive": keepalive,
+                                      "persistent_chat": persistent_chat, "tool_calls": tool_calls}.items()
+                    if v is not None}
         enabled = integration if integration is not None else incremental
         body: Dict[str, Any] = {}
         if enabled is not None:

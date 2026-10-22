@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Configuration</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.2.0">
+<link rel="stylesheet" href="/admin.css?v=5.3.0">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="config" data-title="Configuration">
@@ -39,7 +39,8 @@
             <label class="switch"><input type="checkbox" id="cfg-auto-config"><span class="slider"></span></label>
           </div>
           <div class="setting">
-            <div><div class="s-title">Nouvelle discussion à chaque requête</div><div class="s-desc">Ouvre un nouveau chat pour chaque requête : tout le contexte est renvoyé, sans empilement dans l'UI web.</div></div>
+            <div><div class="s-title">Nouvelle discussion à chaque requête</div><div class="s-desc">Ouvre un nouveau chat pour chaque requête : tout le contexte est renvoyé, sans empilement dans l'UI web.
+              C'est le comportement <b>classique</b> ; une intégration d'agent active l'ignore (elle garde une seule discussion).</div></div>
             <label class="switch"><input type="checkbox" id="cfg-fresh-chat"><span class="slider"></span></label>
           </div>
           <div class="setting">
@@ -58,7 +59,17 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><div><h3 id="h-models">Modèles acceptés</h3><p class="desc">Identifiants reconnus par le proxy (le fournisseur est déduit du modèle).</p></div></div>
+          <div class="card-head"><div><h3 id="h-api">L’API</h3><p class="desc">Le proxy parle OpenAI. Rien d'autre.</p></div></div>
+          <div class="callout" style="margin-bottom:16px">
+            <span id="fmt-ico"></span>
+            <div>Le corps de la requête est <b>strictement OpenAI</b> : <code>model</code>, <code>messages</code>,
+              <code>tools</code>, <code>stream</code>. Aucune variable propriétaire (<code>fresh_chat</code> n'existe
+              plus). L'agent se déclare par un en-tête HTTP, que tous les clients savent envoyer.</div>
+          </div>
+          <div class="section-title" style="font-size:10.5px;font-weight:780;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);margin:0 0 6px">Appel minimal</div>
+          <pre class="session-box mono" id="curl-example" style="white-space:pre-wrap;margin:0"></pre>
+          <div class="section-title" style="font-size:10.5px;font-weight:780;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);margin:18px 0 6px">Modèles acceptés</div>
+          <p class="hint" style="margin:0 0 10px">Identifiants reconnus par le proxy (le fournisseur est déduit du modèle).</p>
           <div id="cfg-models" class="stack" style="gap:14px"><div class="skeleton" style="height:60px"></div></div>
         </div>
       </div>
@@ -66,13 +77,22 @@
   </div>
 </div>
 
-<script src="/admin.js?v=5.2.0"></script>
+<script src="/admin.js?v=5.3.0"></script>
 <script>
 "use strict";
 $("h-tabs").insertAdjacentHTML("afterbegin", icon("tabs"));
 $("h-settings").insertAdjacentHTML("afterbegin", icon("sliders"));
-$("h-models").insertAdjacentHTML("afterbegin", icon("book"));
+$("h-api").insertAdjacentHTML("afterbegin", icon("terminal"));
 $("hint-ico").outerHTML = icon("info", "");
+$("fmt-ico").outerHTML = icon("shield", "");
+
+$("curl-example").textContent = [
+  `curl ${location.origin}/v1/chat/completions \\`,
+  `  -H "Content-Type: application/json" \\`,
+  `  -H "X-NemApi-Agent: qwen-code" \\   # facultatif : déclare l'agent`,
+  `  -d '{"model":"deepseek-chat",`,
+  `       "messages":[{"role":"user","content":"Bonjour"}]}'`,
+].join("\n");
 
 let catalog = [];
 const SWITCHES = { "cfg-stream": "stream_enabled", "cfg-auto-config": "auto_config", "cfg-fresh-chat": "fresh_chat", "cfg-premium-md": "premium_md" };

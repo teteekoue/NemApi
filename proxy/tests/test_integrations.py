@@ -16,7 +16,10 @@ from nemapi import __version__
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from virtual_agent import QWEN_CODE_UA, configure  # noqa: E402
 
-FEATURES = {"incremental_context", "side_queries_local", "continuation", "keepalive"}
+FEATURES = {
+    "persistent_chat", "incremental_context", "tool_calls",
+    "side_queries_local", "continuation", "keepalive",
+}
 SYSTEM = {"role": "system", "content": "You are Qwen Code, an interactive CLI agent developed by Alibaba Group."}
 QWEN = {"User-Agent": QWEN_CODE_UA}
 
@@ -160,16 +163,41 @@ async def test_explicit_header_for_another_agent_wins_over_the_prompt(server):
 
 @pytest.mark.anyio
 async def test_incremental_feature_off_keeps_the_rest(server):
+    """Without the incremental context the prompt is still typed in full, but
+    the discussion is the same one (no new URL) and the side queries are
+    still answered locally."""
     async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
         await configure(server.url, integration=True, incremental=False, fresh_chat=True)
         assert (await c.get("/sessions")).json()["enabled"] is False
         for word in ("a", "b"):
             await c.post("/v1/chat/completions", json=_body(SYSTEM, {"role": "user", "content": word}), headers=QWEN)
-        assert all(j["freshChat"] is True and "Qwen Code" in j["question"] for j in ext.received)
+        assert all(j["freshChat"] is False for j in ext.received)  # « Plus de nouvelle URL »
+        assert all("Qwen Code" in j["question"] for j in ext.received)  # full prompt each time
         n = len(ext.received)  # side queries are still answered locally
         r = await c.post("/v1/chat/completions", headers=QWEN, json=_body(
             SYSTEM, {"role": "user", "content": "[SUGGESTION MODE: suggest what the user may type next]"}))
         assert r.status_code == 200 and len(ext.received) == n
+
+
+@pytest.mark.anyio
+async def test_the_tool_calls_feature_decides_the_tool_contract(server):
+    """« Appels d'outils » on: the agent's tools array is given to the model and
+    the answer comes back as OpenAI tool_calls. Off: the tools are ignored."""
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "Read a file.",
+                                               "parameters": {"type": "object", "properties": {}}}}]
+    answer = 'Je lis.\n\n```tool\n<tool>{"name": "read_file", "arguments": {"path": "a.py"}}</tool>\n```'
+    async with FakeExtension(server.url) as ext, httpx.AsyncClient(base_url=server.url, timeout=20) as c:
+        await configure(server.url, integration=True)
+        await c.post("/v1/chat/completions", json=_body(SYSTEM, {"role": "user", "content": "go"}, tools=tools),
+                     headers=QWEN)
+        assert "You can call tools" in ext.received[-1]["question"]
+        assert "read_file" in ext.received[-1]["question"]
+
+        await configure(server.url, tool_calls=False)
+        await c.post("/v1/chat/completions", json=_body(SYSTEM, {"role": "user", "content": "go2"}, tools=tools),
+                     headers=QWEN)
+        assert "You can call tools" not in ext.received[-1]["question"]
+        assert "read_file" not in ext.received[-1]["question"]
 
 
 @pytest.mark.anyio
