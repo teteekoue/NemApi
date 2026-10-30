@@ -658,5 +658,10 @@ de version cassait le build à chaque fois.
 - `chrome.alarms` a une période minimale (30 s sur Chrome récent, 1 min
   avant) : l'alarme n'est qu'un filet de sécurité pour relancer la boucle de
   poll, jamais le mécanisme de latence.
+- La boucle de poll n'attend plus `reportTabs()` / `pullConfig()` devant le
+  long-poll (deux allers-retours qui retardaient la distribution du job
+  suivant). L'ordre *rapport des onglets puis configuration* reste nécessaire
+  à l'auto-configuration : c'est `acceptJob()` qui refait les deux appels
+  quand le provider n'a pas encore d'onglet, **avant** d'échouer le job.
 - `api.github.com` et `grep.app` sont **rate-limités** depuis cette machine ;
   `lite.duckduckgo.com/lite/?q=` et `raw.githubusercontent.com` fonctionnent.

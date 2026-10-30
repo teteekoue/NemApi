@@ -670,7 +670,18 @@ async function sendJob(tabId, provider, job) {
 /** Take a job from the proxy and hand it to its tab. */
 async function acceptJob(jobData) {
   const provider = jobData.provider;
-  const tabId = targetTabs[provider];
+  let tabId = targetTabs[provider];
+  if (!tabId) {
+    // The tab may have just been opened, or auto-configured on the proxy side
+    // (the tab report and the config pull are no longer awaited before the
+    // long-poll: they used to add a round trip to every request). Refresh on
+    // the miss path instead of failing a job the proxy already handed out.
+    try {
+      await reportTabs();
+      await pullConfig();
+    } catch (_) {}
+    tabId = targetTabs[provider];
+  }
   if (!tabId) {
     extensionLog(`No tab for provider ${provider}`, "warn");
     await postResult(jobData.jobId, "error", `No tab configured for ${provider}`);

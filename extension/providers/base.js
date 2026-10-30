@@ -938,7 +938,10 @@
    * `findEl` is called again on every attempt: React may have replaced the
    * node entirely (a remount discards the text that was written on it).
    */
-  async function writeAndConfirm(findEl, text, { attempts = 5, holdMs = 320, settleMs = 600, log } = {}) {
+  // `holdMs`/`settleMs` are pure latency on the happy path (they are paid on
+  // every request, before the send): they only need to cover one React render,
+  // and an upload that finishes late is already waited for by the caller.
+  async function writeAndConfirm(findEl, text, { attempts = 5, holdMs = 250, settleMs = 350, log } = {}) {
     const want = String(text ?? "").trim();
     if (!want) return null;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -1520,7 +1523,7 @@
     log,
     attempts = 4,
     sendTimeout = 5000,
-    settleMs = 600,
+    settleMs = 350,
     sendDisabledCheck = null,
   } = {}) {
     const want = String(text ?? "").trim();
@@ -1594,7 +1597,7 @@
         btn.focus();
       } catch (_) {}
       if (clickEl(btn)) {
-        await sleep(400);
+        await sleep(250);
         if (accepted()) return true;
         if (sentCheck) {
           for (let i = 0; i < 12; i++) {
