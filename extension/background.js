@@ -1,4 +1,22 @@
-/** NemApi v4.0 Chromium background: parallel jobs per provider + wait for page ready after fresh-chat. */
+/**
+ * NemApi background service worker: parallel jobs per provider, one poll loop.
+ *
+ * RULES THAT COST A BUG EACH (v5.4)
+ *
+ * - The poll loop is a SINGLE loop. The alarm used to reset `pollInFlight`
+ *   while a long-poll was still open, which started a second loop: two
+ *   `GET /job` in flight, two dispatches, and a job rejected with "provider
+ *   busy".
+ * - The loop never AWAITS a job: navigating a tab, waiting for a composer or
+ *   waiting for an answer inside the loop blocked every other provider (and
+ *   was lost when the service worker was suspended).
+ * - A job that cannot finish is reported as an error at once. A closed or
+ *   navigated tab used to leave the job active for the whole 900 s timeout.
+ * - Provider tabs are protected from Chrome's memory saver
+ *   (`autoDiscardable: false`) and from freezing (the content script holds a
+ *   Web Lock): a discarded or frozen tab runs nothing, and the request only
+ *   completed when the user activated the tab.
+ */
 "use strict";
 
 const PROXY = "http://127.0.0.1:8090";
@@ -7,6 +25,13 @@ const PROXY = "http://127.0.0.1:8090";
 // latency to EVERY request; the proxy now holds the request until a job is
 // ready, so a job is picked up as soon as it is queued.
 const JOB_LONG_POLL = 20;
+// A stopped heartbeat for this long means the tab is frozen, crashed or
+// reloaded: the provider slot must be freed (the content script pings every
+// 15 s while it works).
+const PROGRESS_TIMEOUT_MS = 120000;
+// A poll cycle that lasts longer than this is considered dead (a fetch that
+// never settled, a service worker suspended mid-await).
+const POLL_STUCK_MS = (JOB_LONG_POLL + 15) * 1000;
 const PROVIDER_MATCH = [
   { id: "deepseek", re: /chat\.deepseek\.com/i },
   { id: "qwen", re: /chat\.qwen\.ai|qianwen\.com/i },
@@ -24,6 +49,15 @@ const PROVIDER_HOME = {
   chatgpt: "https://chatgpt.com/",
   kimi: "https://www.kimi.ai/",
   zai: "https://chat.z.ai/",
+};
+const PROVIDER_FILES = {
+  deepseek: "providers/deepseek.js",
+  qwen: "providers/qwen.js",
+  claude: "providers/claude.js",
+  gemini: "providers/gemini.js",
+  chatgpt: "providers/chatgpt.js",
+  kimi: "providers/kimi.js",
+  zai: "providers/zai.js",
 };
 
 // Chrome 111 is the first version with chrome.scripting world:"MAIN" and the
@@ -74,13 +108,18 @@ async function fetchWithTimeout(url, opts, ms) {
 
 let pollTimer = null;
 let targetTabs = {};
-/** @type {Record<string, { jobId: string, startedAt: number, freshChat: boolean, tabId: number }>} */
+/** @type {Record<string, { jobId: string, startedAt: number, lastProgress: number, freshChat: boolean, tabId: number }>} */
 let activeJobs = {};
 /** Providers currently navigating to a blank chat / waiting for composer */
 let settlingProviders = {};
+/** Tabs we are navigating ourselves (a navigation event is not a lost job) */
+let navigating = new Set();
 let autoConfigEnabled = true;
-/** Prevent overlapping poll cycles */
-let pollInFlight = false;
+/** A poll cycle is running; guarded by a DEADLINE, never force-reset. */
+let polling = false;
+let pollStartedAt = 0;
+/** Last time each provider tab was protected from the memory saver. */
+let protectedTabs = new Set();
 
 function providerFromUrl(url) {
   return (PROVIDER_MATCH.find((p) => p.re.test(url || "")) || {}).id || null;
@@ -90,9 +129,6 @@ function delay(ms) {
 }
 function anyBusy() {
   return Object.keys(activeJobs).length > 0 || Object.keys(settlingProviders).length > 0;
-}
-function isProviderFree(provider) {
-  return !activeJobs[provider] && !settlingProviders[provider];
 }
 
 async function extensionLog(message, level = "info") {
@@ -115,17 +151,39 @@ async function listAiTabs() {
       title: tab.title || "",
       provider: providerFromUrl(tab.url),
       active: !!tab.active,
+      discarded: !!tab.discarded,
+      frozen: tab.frozen === true,
     }))
     .filter((tab) => tab.provider);
 }
 
+/**
+ * Keep provider tabs out of Chrome's memory saver.
+ *
+ * A discarded tab is unloaded: its content script is gone, and the job that
+ * was running there is lost — the request waited for the proxy timeout. The
+ * tab is restored on activation, which is why "clicking the tab" seemed to
+ * fix the request.
+ */
+async function protectTabs(tabs) {
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || protectedTabs.has(tab.id)) continue;
+    protectedTabs.add(tab.id);
+    try {
+      await chrome.tabs.update(tab.id, { autoDiscardable: false });
+    } catch (_) {}
+  }
+}
+
 async function reportTabs() {
   try {
+    const tabs = await listAiTabs();
+    protectTabs(tabs);
     await fetch(PROXY + "/extension/tabs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        tabs: await listAiTabs(),
+        tabs,
         busy: anyBusy(),
         settling: Object.keys(settlingProviders).length > 0,
         activeProviders: Object.keys(activeJobs),
@@ -160,7 +218,28 @@ function schedule(ms) {
   pollTimer = setTimeout(doPoll, ms);
 }
 
-async function injectScripts(tabId) {
+/**
+ * Is the router already running in this tab?
+ *
+ * Re-injecting nine files before every job re-parsed ~100 KB of JavaScript in
+ * the page on every request, and a page that has to compile our scripts again
+ * for each of its requests feels slow (that is one of the reasons a provider
+ * tab had to be closed and reopened after a while).
+ *
+ * After an extension reload, the old content scripts are ORPHANED (their
+ * `chrome.runtime` is dead): `sendMessage` then fails or nothing answers —
+ * which is exactly what tells us to inject again.
+ */
+async function routerAlive(tabId) {
+  try {
+    const reply = await chrome.tabs.sendMessage(tabId, { action: "ping" });
+    return !!(reply && reply.pong);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function injectScripts(tabId, providerId) {
   // MAIN-world bridge first: after an extension reload, tabs that were already
   // open do not receive the manifest content scripts (page_bridge.js
   // included) — without it the answers are rebuilt from the rendered HTML,
@@ -179,24 +258,26 @@ async function injectScripts(tabId) {
       await extensionLog(`Page bridge injection: ${error.message || error}`, "warn");
     }
   }
+  // base.js + the provider of THIS tab + the router. Injecting all seven
+  // providers before every job (v5.3) parsed ~200 KB of JavaScript in the tab
+  // for nothing: one provider matches the URL, the others only add the cost.
+  const files = ["providers/base.js"];
+  if (providerId && PROVIDER_FILES[providerId]) files.push(PROVIDER_FILES[providerId]);
+  else files.push(...Object.values(PROVIDER_FILES));
+  files.push("content.js");
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: [
-        "providers/base.js",
-        "providers/deepseek.js",
-        "providers/qwen.js",
-        "providers/claude.js",
-        "providers/gemini.js",
-        "providers/chatgpt.js",
-        "providers/kimi.js",
-        "providers/zai.js",
-        "content.js",
-      ],
-    });
+    await chrome.scripting.executeScript({ target: { tabId }, files });
   } catch (error) {
     await extensionLog(`Script injection: ${error.message || error}`, "warn");
+    return false;
   }
+  return true;
+}
+
+/** Inject only when needed: a live router is left alone. */
+async function ensureScripts(tabId, providerId) {
+  if (await routerAlive(tabId)) return true;
+  return injectScripts(tabId, providerId);
 }
 
 async function waitTabComplete(tabId, timeoutMs = 30000) {
@@ -208,29 +289,37 @@ async function waitTabComplete(tabId, timeoutMs = 30000) {
     } catch (_) {
       return false;
     }
-    await delay(200);
+    await delay(150);
   }
   return false;
 }
 
 /**
  * Wait until the provider page exposes a usable chat input.
- * Critical after URL navigation to /new — agents send the next request too fast otherwise.
+ *
+ * Critical after URL navigation to /new — agents send the next request too
+ * fast otherwise. The scripts are injected ONCE here: the old version
+ * re-injected nine files on every 400 ms attempt (up to 60 injections for a
+ * single navigation), which is what made the provider tab feel slow.
  */
-async function waitForComposerReady(tabId, timeoutMs = 25000) {
+async function waitForComposerReady(tabId, providerId, timeoutMs = 20000) {
   const t0 = Date.now();
+  let injected = false;
   while (Date.now() - t0 < timeoutMs) {
     try {
-      await injectScripts(tabId);
       const reply = await chrome.tabs.sendMessage(tabId, { action: "ping" });
       if (reply && reply.pong && reply.hasInput) {
         await extensionLog(`Composer ready on tab ${tabId}`);
         return true;
       }
     } catch (_) {
-      // content script not ready yet
+      // content script not ready yet: inject (once) and try again
+      if (!injected) {
+        injected = true;
+        await injectScripts(tabId, providerId);
+      }
     }
-    await delay(400);
+    await delay(250);
   }
   await extensionLog(`Composer not ready after ${timeoutMs}ms on tab ${tabId}`, "warn");
   return false;
@@ -240,17 +329,20 @@ async function navigateToNewChat(provider, tabId) {
   const url = PROVIDER_HOME[provider];
   if (!url || !Number.isInteger(tabId)) return;
   settlingProviders[provider] = true;
+  navigating.add(tabId);
   try {
     await extensionLog(`Fresh-chat URL → ${provider}: ${url}`);
     await chrome.tabs.update(tabId, { url, active: false });
-    await waitTabComplete(tabId, 30000);
-    await delay(1200);
-    await injectScripts(tabId);
-    await waitForComposerReady(tabId, 20000);
-    await delay(500);
+    await waitTabComplete(tabId, 25000);
+    // The manifest content scripts run on the new page; waitForComposerReady
+    // only injects when nothing answers (a page that predates an extension
+    // reload), instead of injecting on top of a page that already has them.
+    await waitForComposerReady(tabId, provider, 20000);
   } catch (e) {
     await extensionLog(`Fresh-chat navigate failed: ${e.message || e}`, "warn");
   } finally {
+    // a navigation of our own is not a lost job: ignore its events briefly
+    setTimeout(() => navigating.delete(tabId), 2000);
     delete settlingProviders[provider];
   }
 }
@@ -270,6 +362,7 @@ async function postResult(jobId, action, value, typed, meta) {
         // diagnostics: how the answer was read (react = original markdown)
         source: (meta && meta.source) || null,
         bridge: meta && typeof meta.bridge === "boolean" ? meta.bridge : null,
+        timer: (meta && meta.timer) || null,
         partial: !!(meta && meta.partial),
       }),
     });
@@ -289,13 +382,59 @@ function releaseJobSlot(provider, jobId) {
   clearJob(provider, jobId);
 }
 
+/** Fail a job whose tab went away (closed, reloaded, discarded, navigated). */
+async function failJob(provider, reason) {
+  const job = activeJobs[provider];
+  if (!job) return;
+  delete activeJobs[provider];
+  await extensionLog(`Job ${job.jobId} on ${provider}: ${reason}`, "warn");
+  await postResult(job.jobId, "error", reason, true);
+}
+
+function jobForTab(tabId) {
+  for (const [provider, job] of Object.entries(activeJobs)) {
+    if (job.tabId === tabId) return { provider, job };
+  }
+  return null;
+}
+
+/**
+ * Watchdog: a job whose tab stopped reporting progress is dead.
+ *
+ * The content script pings every 15 s while it works. A frozen tab, a crashed
+ * renderer or a reloaded page stops pinging: without this the provider slot
+ * stayed taken for the whole 900 s job timeout (and the extension rejected
+ * every later job for that provider).
+ */
+async function runWatchdog() {
+  const now = Date.now();
+  for (const [provider, job] of Object.entries(activeJobs)) {
+    const last = job.lastProgress || job.startedAt;
+    if (now - last > PROGRESS_TIMEOUT_MS) {
+      delete activeJobs[provider];
+      await extensionLog(`Watchdog: ${provider} job ${job.jobId} silent for ${Math.round((now - last) / 1000)}s`, "warn");
+      await postResult(job.jobId, "error", "the provider tab stopped responding (frozen, reloaded or closed)", true);
+    } else if (now - job.startedAt > jobTimeoutMs + 15000) {
+      // the proxy has certainly given up: nothing will ever read this result
+      delete activeJobs[provider];
+      await postResult(job.jobId, "error", "job abandoned locally (watchdog)", true);
+      await extensionLog(`Watchdog: released stuck ${provider} job ${job.jobId}`, "warn");
+    }
+  }
+}
+
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "automationResult") {
     const provider = msg.provider;
     if (provider) {
       releaseJobSlot(provider, msg.jobId);
-      postResult(msg.jobId, "result", msg.result, undefined, { source: msg.source, bridge: msg.bridge, partial: msg.partial });
+      postResult(msg.jobId, "result", msg.result, undefined, {
+        source: msg.source,
+        bridge: msg.bridge,
+        timer: msg.timer,
+        partial: msg.partial,
+      });
       extensionLog(`Job ${msg.jobId} completed on ${provider}`);
     }
     sendResponse({ ok: true });
@@ -310,6 +449,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       postResult(msg.jobId, "error", msg.error, msg.typed);
       extensionLog(`Job ${msg.jobId} failed on ${provider || "?"}: ${msg.error}`, "error");
     }
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "jobProgress") {
+    const provider = Object.keys(activeJobs).find(
+      (p) => activeJobs[p] && activeJobs[p].jobId === msg.jobId
+    );
+    if (provider) activeJobs[provider].lastProgress = Date.now();
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "extensionLog") {
+    extensionLog(String(msg.message || ""), msg.level === "warn" ? "warn" : "info");
     sendResponse({ ok: true });
     return true;
   }
@@ -427,119 +579,189 @@ async function installPageClipHook(tabId) {
   });
 }
 
-// Main polling loop - FETCH JOBS FROM /job
-async function doPoll() {
-  if (pollInFlight) {
-    schedule(2000);
+/**
+ * Run one job on its tab.
+ *
+ * Never awaited by the poll loop: a fresh-chat navigation or a slow injection
+ * used to block every other provider (and lost the job when the service
+ * worker was suspended mid-await).
+ */
+async function runJob(tabId, provider, job) {
+  try {
+    // The provider slot has to be free. It can be briefly taken by a job whose
+    // result is still in flight: wait for it instead of rejecting a job the
+    // proxy has already handed out (the client saw a failure).
+    const deadline = Date.now() + 30000;
+    while (settlingProviders[provider] && Date.now() < deadline) {
+      await delay(200);
+    }
+    if (settlingProviders[provider]) {
+      await extensionLog(`Provider ${provider} still settling — job rejected`, "warn");
+      delete activeJobs[provider];
+      await postResult(job.jobId, "error", `Provider ${provider} is settling (page reload)`);
+      return;
+    }
+    extensionLog(`Starting job ${job.jobId} on ${provider}`);
+    await ensureScripts(tabId, provider);
+    // Ensure fresh chat if needed
+    if (job.freshChat !== false) {
+      await navigateToNewChat(provider, tabId);
+    }
+    await sendJob(tabId, provider, job);
+  } catch (e) {
+    const message = (e && e.message) || String(e);
+    await extensionLog(`Job start failed: ${message}`, "error");
+    releaseJobSlot(provider, job.jobId);
+    await postResult(job.jobId, "error", message);
+  }
+}
+
+/**
+ * Hand the job to the content script, and recover a tab that lost it.
+ *
+ * A discarded or crashed tab has no content script: the send fails and the
+ * request used to die with "Receiving end does not exist" — the user then had
+ * to open the tab and retry. Reloading costs a few seconds but keeps the
+ * request alive.
+ */
+async function sendJob(tabId, provider, job) {
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      action: "runAutomation",
+      jobId: job.jobId,
+      question: job.question,
+      provider: provider,
+      model: job.model,
+      premiumMd: job.premiumMd !== false,
+      jobTimeoutMs: Number(job.jobTimeoutMs) || jobTimeoutMs,
+      // multimodal: OpenAI image_url parts, forwarded untouched
+      images: Array.isArray(job.images) ? job.images : null,
+    });
+    return true;
+  } catch (first) {
+    await extensionLog(
+      `Send to ${provider} tab failed (${(first && first.message) || first}) → reloading the tab`,
+      "warn"
+    );
+    try {
+      navigating.add(tabId);
+      await chrome.tabs.reload(tabId);
+      await waitTabComplete(tabId, 25000);
+      await injectScripts(tabId, provider);
+      await waitForComposerReady(tabId, provider, 20000);
+      await chrome.tabs.sendMessage(tabId, {
+        action: "runAutomation",
+        jobId: job.jobId,
+        question: job.question,
+        provider: provider,
+        model: job.model,
+        premiumMd: job.premiumMd !== false,
+        jobTimeoutMs: Number(job.jobTimeoutMs) || jobTimeoutMs,
+        images: Array.isArray(job.images) ? job.images : null,
+      });
+      return true;
+    } catch (second) {
+      setTimeout(() => navigating.delete(tabId), 1000);
+      throw second;
+    }
+  }
+}
+
+/** Take a job from the proxy and hand it to its tab. */
+async function acceptJob(jobData) {
+  const provider = jobData.provider;
+  const tabId = targetTabs[provider];
+  if (!tabId) {
+    extensionLog(`No tab for provider ${provider}`, "warn");
+    await postResult(jobData.jobId, "error", `No tab configured for ${provider}`);
     return;
   }
-  pollInFlight = true;
-  let polledJob = false;
-  try {
-    // Report our tabs FIRST: the proxy may auto-configure a target tab from
-    // this report. Pulling the config afterwards makes sure that freshly
-    // auto-configured tab is known here before we fetch a job in the same
-    // cycle — otherwise the job is rejected with "No tab configured" and
-    // retried a full cycle later (the first request after opening a tab
-    // always failed).
-    await reportTabs();
-    await pullConfig();
-    
-    // Watchdog: libère les jobs bloqués (le proxy abandonne après jobTimeoutMs, donc tout
-    // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).
-    try {
-      const now = Date.now();
-      for (const [provider, job] of Object.entries(activeJobs)) {
-        if (now - job.startedAt > jobTimeoutMs + 15000) {
-          delete activeJobs[provider];
-          postResult(job.jobId, "error", "job abandoned locally (watchdog)", true);
-          extensionLog(`Watchdog: released stuck ${provider} job ${job.jobId}`, "warn");
-        }
-      }
-    } catch (_) {}
+  if (activeJobs[provider]) {
+    // The job was already taken from the proxy queue: dropping it silently
+    // leaves the client waiting for the whole job timeout (900 s). Report
+    // the failure instead so the slot is released and the caller gets an
+    // error right away.
+    extensionLog(`Provider ${provider} busy — job rejected`, "warn");
+    await postResult(jobData.jobId, "error", `Provider ${provider} is still busy`);
+    return;
+  }
+  activeJobs[provider] = {
+    jobId: jobData.jobId,
+    startedAt: Date.now(),
+    lastProgress: Date.now(),
+    freshChat: jobData.freshChat !== false,
+    tabId: tabId,
+  };
+  // Deliberately not awaited: the poll loop must stay available for the other
+  // providers (and for the answer of this one).
+  runJob(tabId, provider, jobData);
+}
 
-    // Check for pending jobs from proxy via /job endpoint
+/**
+ * Tab report + config refresh + tab protection, at their own pace.
+ *
+ * Never awaited by the poll loop: a `chrome.tabs.query` (and the two HTTP
+ * calls) between two long-polls delayed the dispatch of a queued job.
+ */
+let housekeepingAt = 0;
+let housekeepingAgain = false;
+async function housekeeping() {
+  if (housekeepingAgain) return; // one run at a time
+  housekeepingAgain = true;
+  try {
+    await reportTabs();
+    const now = Date.now();
+    if (now - housekeepingAt > 3000) {
+      housekeepingAt = now;
+      await pullConfig();
+    }
+  } finally {
+    housekeepingAgain = false;
+  }
+}
+
+// Main polling loop - FETCH JOBS FROM /job
+async function doPoll() {
+  if (polling) {
+    if (Date.now() - pollStartedAt < POLL_STUCK_MS) return; // normal: a cycle is open
+    // The previous cycle never came back (a fetch that hung, or a service
+    // worker suspended in the middle of it). Take over instead of resetting
+    // the flag — resetting it started a SECOND loop in parallel.
+    await extensionLog("Poll cycle stuck → new cycle", "warn");
+  }
+  polling = true;
+  pollStartedAt = Date.now();
+  let delayMs = 0;
+  try {
+    // Housekeeping is not on the critical path of a request: it used to be
+    // awaited BEFORE the long-poll of every cycle, adding two round trips and
+    // a `chrome.tabs.query` between a job being ready and being dispatched.
+    housekeeping().catch(() => {});
+    await runWatchdog();
     try {
-      // MV3: ne jamais laisser un fetch pendu figer le poll
       // long-poll: the proxy holds the request until a job is queued
       const response = await fetchWithTimeout(
         PROXY + "/job?wait=" + JOB_LONG_POLL,
         { cache: "no-store" },
-        30000
+        (JOB_LONG_POLL + 10) * 1000
       );
       const jobData = await response.json();
-      
       if (jobData && jobData.action === "ask") {
-        const provider = jobData.provider;
-        const tabId = targetTabs[provider];
-        polledJob = true;
-        
-        if (!tabId) {
-          extensionLog(`No tab for provider ${provider}`, "warn");
-          postResult(jobData.jobId, "error", `No tab configured for ${provider}`);
-          return;
-        }
-        
-        if (activeJobs[provider]) {
-          // The job was already taken from the proxy queue: dropping it silently
-          // leaves the client waiting for the whole job timeout (900 s). Report
-          // the failure instead so the slot is released and the caller gets an
-          // error right away.
-          extensionLog(`Provider ${provider} busy — job rejected`, "warn");
-          postResult(jobData.jobId, "error", `Provider ${provider} is still busy`);
-          return;
-        }
-
-        if (settlingProviders[provider]) {
-          extensionLog(`Provider ${provider} settling — job rejected`, "warn");
-          postResult(jobData.jobId, "error", `Provider ${provider} is settling (page reload)`);
-          return;
-        }
-        
-        // Start the job
-        activeJobs[provider] = { 
-          jobId: jobData.jobId, 
-          startedAt: Date.now(), 
-          freshChat: false,
-          tabId: tabId
-        };
-        
-        try {
-          extensionLog(`Starting job ${jobData.jobId} on ${provider}`);
-          await injectScripts(tabId);
-          
-          // Ensure fresh chat if needed
-          if (jobData.freshChat !== false) {
-            await navigateToNewChat(provider, tabId);
-          }
-          
-          await chrome.tabs.sendMessage(tabId, {
-            action: "runAutomation",
-            jobId: jobData.jobId,
-            question: jobData.question,
-            provider: provider,
-            model: jobData.model,
-            premiumMd: jobData.premiumMd !== false,
-            jobTimeoutMs: Number(jobData.jobTimeoutMs) || jobTimeoutMs,
-            // multimodal: OpenAI image_url parts, forwarded untouched
-            images: Array.isArray(jobData.images) ? jobData.images : null,
-          });
-        } catch (e) {
-          extensionLog(`Job start failed: ${e.message || e}`, "error");
-          releaseJobSlot(provider, jobData.jobId);
-          postResult(jobData.jobId, "error", e.message || String(e));
-        }
+        await acceptJob(jobData);
       }
     } catch (e) {
-      // No pending jobs or proxy not ready - ignore
+      // No pending jobs, proxy not ready or fetch timed out: back off a little
+      // so a dead proxy does not spin the service worker at full speed.
+      delayMs = 1000;
     }
   } catch (e) {
     await extensionLog(`Poll error: ${e.message || e}`, "error");
+    delayMs = 1000;
   } finally {
-    pollInFlight = false;
-    // The long-poll already waited for a job (or timed out): a short delay is
-    // enough, a long one would add latency to the next request.
-    schedule(polledJob ? 300 : 1000);
+    polling = false;
+    // The long-poll already waited for a job (or timed out): poll again at
+    // once. The 1 s pause of v5.3 was pure latency on the next request.
+    schedule(delayMs);
   }
 }
 
@@ -556,28 +778,36 @@ chrome.action.onClicked.addListener(async () => {
 function ensurePollLoop() {
   if (HAS_ALARMS || pollLoopStarted || !isWorker) return;
   pollLoopStarted = true;
-  extensionLog("chrome.alarms indisponible → boucle de poll par setTimeout (mode compatible)");
+  extensionLog("chrome.alarms unavailable → poll loop driven by setTimeout (compatibility mode)");
   const tick = () => {
-    pollInFlight = false; // décoince un fetch mort (navigateur revenu de veille)
+    // A fetch that never settled must not stop the loop for ever: the
+    // deadline in doPoll() decides, the flag is not reset here.
     doPoll();
     pollLoopTimer = setTimeout(tick, 30000);
   };
   pollLoopTimer = setTimeout(tick, 30000);
 }
 
-// Start polling
+// Start polling — on install/update too: an extension reloaded while the
+// browser stayed open used to poll nothing until the next browser event.
+try {
+  chrome.runtime.onInstalled.addListener(() => doPoll());
+  chrome.runtime.onStartup.addListener(() => doPoll());
+} catch (_) {}
+
 doPoll();
 
-// MV3 keep-alive: le service worker peut être suspendu après ~30s
-// d'inactivité, ce qui tue les setTimeout du poll. Une alarme périodique
-// réveille le SW et relance doPoll si la boucle s'est arrêtée.
+// MV3 keep-alive: Chrome suspends an idle service worker after ~30 s, which
+// kills the poll's setTimeout. A periodic alarm wakes the worker up and
+// restarts doPoll if the loop died (a safety net: the pending long-poll fetch
+// is what really keeps it alive).
 if (HAS_ALARMS) {
+  // 0.5 min is the floor Chrome accepts on recent versions (older ones clamp
+  // it to 1 min): this alarm only restarts a poll loop that died with the
+  // service worker, so its period is not on the critical path any more.
   chrome.alarms.create("nemapi-poll", { periodInMinutes: 0.5 });
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "nemapi-poll") {
-      pollInFlight = false;   // décoince un fetch mort (navigateur revenu de veille)
-      doPoll();
-    }
+    if (alarm.name === "nemapi-poll") doPoll();
   });
 }
 
@@ -590,8 +820,12 @@ if (HAS_WEBNAV) {
     if (details.frameId !== 0) return;
     const provider = providerFromUrl(details.url);
     if (!provider) return;
-    if (SCRIPTS_WORLD_MAIN) return; // main world injection already handled by injectScripts
-    injectScripts(details.tabId).catch(() => {});
+    if (!SCRIPTS_WORLD_MAIN) injectScripts(details.tabId, provider).catch(() => {});
+    // A page that commits while a job is running has thrown the content
+    // script (and the answer) away: the job would wait for its timeout.
+    if (navigating.has(details.tabId)) return;
+    const running = jobForTab(details.tabId);
+    if (running) failJob(running.provider, "the provider tab navigated away during the job");
   });
 }
 
@@ -601,12 +835,29 @@ try {
   ensurePollLoop();
 } catch (_) {}
 
-// Clean up on tab close
+// Clean up on tab close: the job must fail NOW, not after the 900 s timeout.
 chrome.tabs.onRemoved.addListener((tabId) => {
-  for (const [provider, job] of Object.entries(activeJobs)) {
-    if (job.tabId === tabId) {
-      delete activeJobs[provider];
-      extensionLog(`Cleaned up job for closed tab ${tabId}`);
-    }
+  navigating.delete(tabId);
+  protectedTabs.delete(tabId);
+  const running = jobForTab(tabId);
+  if (running) {
+    failJob(running.provider, `the ${running.provider} tab was closed during the job`);
   }
 });
+
+// A tab that reloads or is discarded loses its content script: same outcome.
+if (chrome.tabs.onUpdated) {
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (!changeInfo) return;
+    if (changeInfo.discarded) {
+      protectedTabs.delete(tabId);
+      const running = jobForTab(tabId);
+      if (running) failJob(running.provider, `the ${running.provider} tab was discarded during the job`);
+      return;
+    }
+    if (changeInfo.status === "loading" && !navigating.has(tabId)) {
+      const running = jobForTab(tabId);
+      if (running) failJob(running.provider, `the ${running.provider} tab reloaded during the job`);
+    }
+  });
+}

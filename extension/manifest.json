@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NemApi",
-  "version": "5.3.1",
+  "version": "5.4.0",
   "description": "Local OpenAI-compatible API bridge for DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi and Z.ai via Chromium DOM automation.",
   "permissions": [
     "storage",
@@ -135,5 +135,38 @@
     "48": "icons/logo-48.png",
     "128": "icons/logo-128.png"
   },
-  "minimum_chrome_version": "103"
+  "minimum_chrome_version": "103",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "providers/ticker.js"
+      ],
+      "matches": [
+        "*://chat.deepseek.com/*",
+        "*://chat.qwen.ai/*",
+        "*://*.qwen.ai/*",
+        "*://qianwen.com/*",
+        "*://*.qianwen.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
+        "*://chatgpt.com/*",
+        "*://*.chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://kimi.com/*",
+        "*://*.kimi.com/*",
+        "*://kimi.ai/*",
+        "*://*.kimi.ai/*",
+        "*://www.kimi.ai/*",
+        "*://www.kimi.com/*",
+        "*://moonshot.cn/*",
+        "*://*.moonshot.cn/*",
+        "*://chat.z.ai/*",
+        "*://*.z.ai/*",
+        "*://chatglm.cn/*",
+        "*://*.chatglm.cn/*",
+        "*://bigmodel.cn/*",
+        "*://*.bigmodel.cn/*"
+      ]
+    }
+  ]
 }

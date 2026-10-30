@@ -566,7 +566,7 @@
     try {
       const els = getMessageEls();
       const last = els.length ? els[els.length - 1] : null;
-      const raw = last ? String(last.innerText || last.textContent || "") : "";
+      const raw = last ? readCheapText(last) : "";
       return els.length + ":" + raw.length;
     } catch (_) {
       return "0:0";
@@ -752,16 +752,17 @@
         msgEl.querySelector(".ds-markdown") ||
         msgEl.querySelector("[class*='markdown']");
       const node = main || msgEl;
-      return String(node.innerText || node.textContent || "");
+      // textContent, not innerText: innerText forces a layout on every tick
+      return String(node.textContent || "");
     } catch (_) {
       return "";
     }
   }
 
   async function waitForResponse(previous = "", prevCount = 0) {
-    await B.sleep(400);
-
-    // Phase 1: wait for generation to start (Stop button, new bubble, or new content)
+    // Phase 1: wait for generation to start (Stop button, new bubble, or new
+    // content). The leading 400 ms sleep is gone: this loop already starts
+    // with a CHEAP read, and the sleep was paid by every request.
     const genStart = Date.now();
     while (Date.now() - genStart < 10000) {
       if (isGenerating()) break;
@@ -806,6 +807,7 @@
     extractPremium, // final read of an answer (exported for tests)
     getResponseCount,
     getActivitySignature,
+    readCheapText,
     isGenerating,
     findInput,
     findFileInput,

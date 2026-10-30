@@ -190,25 +190,30 @@ class JobManager:
             return job
         return None
 
-    async def take_wait(self, timeout: float, is_disconnected=None, poll: float = 0.5) -> Optional[Job]:
+    async def take_wait(self, timeout: float, is_disconnected=None, poll: float = 0.25) -> Optional[Job]:
         """Long-poll variant of take(): wait up to `timeout` seconds for a job.
 
         `is_disconnected` is checked before handing out a job: a poller whose
         client went away (extension reloaded, service worker suspended…) must
         never "steal" a job, otherwise that job would be dispatched to nobody
         and block its provider.
+
+        The wakeup event is CLEARED BEFORE the queue is inspected, never after:
+        a job created between `take()` and `clear()` used to be missed, and the
+        request then waited for the next poll tick (up to 500 ms) — on every
+        request, for nothing.
         """
         deadline = time.monotonic() + timeout
         while True:
             if is_disconnected is not None and await is_disconnected():
                 return None
+            self._wakeup.clear()
             job = self.take()
             if job:
                 return job
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            self._wakeup.clear()
             try:
                 await asyncio.wait_for(self._wakeup.wait(), timeout=min(remaining, poll))
             except asyncio.TimeoutError:

@@ -4,18 +4,377 @@
 (function (global) {
   "use strict";
 
+  /* ------------------------------------------------------------------ */
+  /* Timers — the hidden-tab problem                                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Timers that keep their pace in a hidden (background) tab.
+   *
+   * Chrome throttles the timers of a hidden page in three tiers: on schedule
+   * while visible, ONE wake per second once hidden, and — after five minutes
+   * hidden, thirty seconds of silence and a timer **chain** of 5+ — ONE wake
+   * per MINUTE ("intensive wake-up throttling", Chrome 88+).
+   *
+   * Every wait of this extension is a chained timer (a poll loop that calls
+   * itself), so a background tab landed in the intensive tier: an idle check
+   * asking for 1.5 s of quiet woke up a minute later. A whole request then
+   * took 2–5 minutes, and it finished INSTANTLY as soon as the user brought
+   * the tab back to the foreground (visibility restores the normal tier).
+   * That is the random "it only works when I look at the tab" bug.
+   *
+   * Two mechanisms, in this order:
+   *  1. a dedicated Worker (`providers/ticker.js`): its timers are not
+   *     throttled at all;
+   *  2. a MessageChannel bounce: the `message` task is not a timer task, so
+   *     the `setTimeout` armed from it restarts the nesting level at 1 — the
+   *     chain never reaches 5 and the intensive tier is never applied (1 s
+   *     granularity instead of 60 s);
+   *  3. a plain `setTimeout`, for a page without the extension (tests, the
+   *     MAIN world) — the old behaviour.
+   *
+   * Every worker wait carries a guard timer: a worker that dies without
+   * firing `onerror` must not hang a request forever. Two misses retire it.
+   */
+  const TimerHub = (function () {
+    // A worker call that is this late is not coming: resolve, count a miss.
+    // (A healthy worker answers within a millisecond; the guard only exists so
+    // that a worker killed without an `error` event cannot hang a request.)
+    const GUARD_MS = 2500;
+    // How long the initial `ping` may take before the worker is written off.
+    const PROBE_MS = 1200;
+    // `gen` invalidates a late `pong` from a worker that was already written
+    // off (the probe timeout fired, then the message arrived).
+    const worker = {
+      state: "unknown",
+      ref: null,
+      seq: 1,
+      waits: new Map(),
+      // guard timers of the waits in flight: a wait that is resolved or
+      // cancelled early must not leave one armed (a wake-up loop cancels a lot)
+      guards: new Map(),
+      misses: 0,
+      gen: 0,
+    };
+    const bounce = { port: null, keep: null, seq: 1, waits: new Map(), queue: [] };
+
+    function extensionAvailable() {
+      try {
+        return (
+          typeof chrome !== "undefined" &&
+          !!chrome.runtime &&
+          typeof chrome.runtime.getURL === "function"
+        );
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function dropGuard(id) {
+      const handle = worker.guards.get(id);
+      if (handle === undefined) return;
+      worker.guards.delete(id);
+      try {
+        clearTimeout(handle);
+      } catch (_) {}
+    }
+
+    /** Resolve every wait still delegated to the worker (it went away). */
+    function releaseWorkerWaits() {
+      const pending = Array.from(worker.waits.values());
+      worker.waits.clear();
+      for (const id of Array.from(worker.guards.keys())) dropGuard(id);
+      for (const entry of pending) {
+        try {
+          entry.resolve();
+        } catch (_) {}
+      }
+    }
+
+    function retireWorker() {
+      worker.gen += 1;
+      try {
+        worker.ref && worker.ref.terminate();
+      } catch (_) {}
+      worker.ref = null;
+      worker.state = "unavailable";
+      releaseWorkerWaits();
+    }
+
+    /**
+     * Spawn the worker and CONFIRM it answers before trusting it.
+     *
+     * A worker that never replies is worse than no worker: every sleep would
+     * wait for its guard timer. A page CSP (`worker-src`) also refuses the
+     * `chrome-extension://` URL, sometimes only through an error event, so the
+     * ping is the only reliable proof that the channel works.
+     */
+    function startWorker() {
+      if (worker.state !== "unknown") return;
+      worker.state = "unavailable";
+      if (!extensionAvailable() || typeof Worker !== "function") return;
+      let ref = null;
+      try {
+        ref = new Worker(chrome.runtime.getURL("providers/ticker.js"));
+      } catch (_) {
+        return; // CSP of the page (worker-src), or the resource is missing
+      }
+      const gen = worker.gen;
+      try {
+        ref.onmessage = function (event) {
+          const data = (event && event.data) || {};
+          const id = data.id;
+          if (data.type === "pong") {
+            if (id === "probe" && gen === worker.gen) {
+              worker.state = "ready";
+              worker.ref = ref;
+            }
+            return;
+          }
+          const entry = id != null ? worker.waits.get(id) : null;
+          if (!entry) return;
+          worker.waits.delete(id);
+          dropGuard(id);
+          worker.misses = 0;
+          try {
+            entry.resolve();
+          } catch (_) {}
+        };
+        ref.onerror = function () {
+          retireWorker();
+        };
+      } catch (_) {
+        return;
+      }
+      try {
+        ref.postMessage({ type: "ping", id: "probe" });
+      } catch (_) {
+        return;
+      }
+      // No pong: the page refuses the worker (CSP) or it is starved. Stop
+      // trusting it, but keep it alive — a late `pong` revives it, and a
+      // worker that answers nothing costs GUARD_MS on every wait.
+      setTimeout(function () {
+        if (gen === worker.gen && worker.state !== "ready") worker.state = "unavailable";
+      }, PROBE_MS);
+    }
+
+    function arriveOnTime(id) {
+      return function () {
+        const entry = worker.waits.get(id);
+        if (!entry) return; // the worker answered: nothing to repair
+        worker.waits.delete(id);
+        worker.misses += 1;
+        if (worker.misses >= 2) {
+          // A worker that answers nothing is worse than no worker: the guard
+          // timer would add GUARD_MS to every single wait.
+          retireWorker();
+        }
+        try {
+          entry.resolve();
+        } catch (_) {}
+      };
+    }
+
+    function workerArm(ms) {
+      const id = worker.seq++;
+      let resolveLater = null;
+      const promise = new Promise((resolve) => {
+        resolveLater = resolve;
+        worker.waits.set(id, { resolve: resolve });
+        try {
+          worker.ref.postMessage({ type: "sleep", id: id, ms: ms });
+        } catch (_) {
+          worker.waits.delete(id);
+          return resolve();
+        }
+        // Guard: page timers are throttled, but they do eventually fire.
+        worker.guards.set(
+          id,
+          setTimeout(function () {
+            worker.guards.delete(id);
+            arriveOnTime(id)();
+          }, ms + GUARD_MS)
+        );
+      });
+      return {
+        promise: promise,
+        cancel: function () {
+          dropGuard(id);
+          if (!worker.waits.has(id)) return;
+          worker.waits.delete(id);
+          try {
+            worker.ref && worker.ref.postMessage({ type: "cancel", id: id });
+          } catch (_) {}
+          try {
+            resolveLater && resolveLater();
+          } catch (_) {}
+        },
+      };
+    }
+
+    function startBounce() {
+      if (bounce.port) return;
+      try {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = function () {
+          const id = bounce.queue.shift();
+          if (id === undefined) return;
+          const entry = bounce.waits.get(id);
+          if (!entry) return;
+          bounce.waits.delete(id);
+          // Armed from a MESSAGE task, not from a timer task: nesting level 1.
+          setTimeout(function () {
+            try {
+              entry.resolve();
+            } catch (_) {}
+          }, entry.ms);
+        };
+        // The endpoint must stay reachable: a port with no reference left is
+        // collected and stops delivering.
+        bounce.port = channel.port2;
+        bounce.keep = channel.port1;
+      } catch (_) {
+        bounce.port = null;
+        bounce.keep = null;
+      }
+    }
+
+    function bounceArm(ms) {
+      const id = bounce.seq++;
+      const promise = new Promise((resolve) => {
+        bounce.waits.set(id, { ms: ms, resolve: resolve });
+        bounce.queue.push(id);
+        try {
+          bounce.port.postMessage(id);
+        } catch (_) {
+          bounce.waits.delete(id);
+          resolve();
+        }
+      });
+      return {
+        promise: promise,
+        cancel: function () {
+          if (!bounce.waits.has(id)) return;
+          bounce.waits.delete(id);
+        },
+      };
+    }
+
+    /**
+     * Arm a timer of `ms`, immune to background-tab throttling when possible.
+     * Returns `{ promise, cancel }`: the wait loops cancel the pending timer
+     * when the page changes before the delay elapsed (a wake-up that is
+     * cancelled must not leave a timer behind in the worker).
+     */
+    function arm(ms) {
+      const delay = Math.max(0, Number(ms) || 0);
+      if (!delay) {
+        const promise = new Promise((r) => setTimeout(r, 0));
+        return { promise: promise, cancel: function () {} };
+      }
+      // The Worker is used even while the tab is visible: it is then already
+      // spawned, pinged and warm when the tab goes to the background, and the
+      // waits never switch source in the middle of a job. A round trip costs a
+      // few hundred microseconds, which is nothing next to the 250-800 ms
+      // polls it drives.
+      startWorker();
+      if (worker.state === "ready" && worker.ref) return workerArm(delay);
+      startBounce();
+      if (bounce.port) return bounceArm(delay);
+      let handle = null;
+      const promise = new Promise((r) => {
+        handle = setTimeout(r, delay);
+      });
+      return {
+        promise: promise,
+        cancel: function () {
+          clearTimeout(handle);
+        },
+      };
+    }
+
+    function sleep(ms) {
+      return arm(ms).promise;
+    }
+
+    return {
+      sleep: sleep,
+      arm: arm,
+      /** "worker" | "message" | "timer" — what a hidden tab actually uses. */
+      mode: function () {
+        if (worker.state === "ready" && worker.ref) return "worker";
+        if (bounce.port) return "message";
+        return "timer";
+      },
+      workerState: function () {
+        return worker.state;
+      },
+    };
+  })();
+
   function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    return TimerHub.sleep(ms);
+  }
+
+  /**
+   * Sleep `ms`, but wake up as soon as the page changes.
+   *
+   * The wait loops used to poll on a fixed cadence: they could miss the exact
+   * moment an answer ended (up to one full `pollMs`, plus the throttled timer
+   * in a hidden tab) and they woke up for nothing the rest of the time. A
+   * MutationObserver callback is a microtask, never throttled, so a token that
+   * lands wakes the loop at once; the timer stays as the fallback for a page
+   * that does not change at all (and as the maximum wait).
+   *
+   * `minGapMs` keeps a fast stream from re-entering the loop at token rate.
+   */
+  function sleepOrChange(ms, minGapMs) {
+    const gap = minGapMs === undefined ? 60 : minGapMs;
+    const wait = TimerHub.arm(ms);
+    return new Promise((resolve) => {
+      let done = false;
+      let observer = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try {
+          observer && observer.disconnect();
+        } catch (_) {}
+        try {
+          wait.cancel();
+        } catch (_) {}
+        resolve();
+      };
+      wait.promise.then(finish);
+      try {
+        if (typeof MutationObserver === "function" && ms > gap) {
+          const t0 = Date.now();
+          observer = new MutationObserver(function () {
+            if (Date.now() - t0 >= gap) finish();
+          });
+          observer.observe(document.documentElement || document.body, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+          });
+        }
+      } catch (_) {}
+    });
   }
 
   function waitFor(selector, timeout = 12000) {
     return new Promise((resolve, reject) => {
       const t0 = Date.now();
       const tick = () => {
-        const el = document.querySelector(selector);
+        let el = null;
+        try {
+          el = document.querySelector(selector);
+        } catch (_) {}
         if (el) return resolve(el);
         if (Date.now() - t0 > timeout) return reject(new Error("Timeout: " + selector));
-        setTimeout(tick, 120);
+        // woken by the page itself instead of a fixed 120 ms cadence
+        sleepOrChange(120, 40).then(tick, tick);
       };
       tick();
     });
@@ -49,6 +408,112 @@
 
   function textOf(el) {
     return (el && (el.innerText || el.textContent || "") || "").trim();
+  }
+
+  /**
+   * Same answer, different representation?
+   *
+   * `previous` is the MARKDOWN of the last answer (what the proxy returned),
+   * while the polling loops read the plain text of the DOM: fences, backticks,
+   * emphasis markers and link targets differ, the words do not. Comparing the
+   * two verbatim made a cheap poll take the previous answer for a new one.
+   *
+   * The length guard keeps the cost at O(1) in the common case: markdown
+   * decoration is a few percent of the text, so a large gap is another answer
+   * and the regexes are not worth running.
+   */
+  function sameAnswer(a, b) {
+    const x = String(a || "");
+    const y = String(b || "");
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const longest = Math.max(x.length, y.length);
+    if (Math.abs(x.length - y.length) > Math.max(64, longest * 0.15)) return false;
+    const strip = (t) =>
+      t
+        .replace(/```[a-zA-Z0-9_+-]*\n?/g, "")
+        .replace(/\]\([^)\s]*\)/g, "]")
+        .replace(/[*_`#>~]+/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    try {
+      return strip(x) === strip(y);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Cheap text of a message element — what the polling loops read.
+   *
+   * `getLastResponse()` rebuilds the WHOLE markdown of the answer (clone of the
+   * DOM + innerText + restoreMath + regexes + code-fence reconstruction). It is
+   * O(answer), and it used to run on every 400 ms tick of every wait: on a
+   * 40 KB answer that is the main cost of the extension, and the reason the
+   * provider tab became janky while a job was running (the page shares its
+   * only main thread with us).
+   *
+   * A poll only needs to answer "did the text change?": plain `textContent`
+   * (which does not force a layout, unlike `innerText`) is enough for that.
+   * The exact markdown is built ONCE, when the answer is accepted.
+   */
+  function cheapText(el) {
+    if (!el) return "";
+    try {
+      return String(el.textContent || "");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * Keep this tab out of Chrome's freezer.
+   *
+   * Since Chrome 133 the "Energy Saver" / page-freezing policy suspends the
+   * task execution of a tab that has been hidden and silent for five minutes
+   * — timers, event handlers, promise jobs, everything. A request in flight
+   * then simply stops until the user activates the tab, which is exactly the
+   * "it waits forever until I click the tab" symptom.
+   *
+   * The documented opt-out is to HOLD A WEB LOCK (Chromium, "Page Freezing
+   * Opt-In and Opt-Out": a page holding a Web Lock is never frozen). The lock
+   * is taken with a private name so it cannot collide with the page's own
+   * locks, and it is never released while the tab lives.
+   */
+  function keepTabAwake() {
+    try {
+      if (!navigator || !navigator.locks || typeof navigator.locks.request !== "function") {
+        return "unavailable";
+      }
+      if (global.__NEMAPI_KEEP_AWAKE__) return global.__NEMAPI_KEEP_AWAKE__;
+      global.__NEMAPI_KEEP_AWAKE__ = "requested";
+      navigator.locks
+        .request("nemapi:keep-page-alive", { mode: "shared" }, function () {
+          global.__NEMAPI_KEEP_AWAKE__ = "held";
+          // Never resolves: the lock is held for the life of the tab.
+          return new Promise(function () {});
+        })
+        .catch(function () {
+          global.__NEMAPI_KEEP_AWAKE__ = "failed";
+        });
+      return "requested";
+    } catch (_) {
+      return "failed";
+    }
+  }
+
+  /** Is the page allowed to run at all? (frozen / discarded / hidden) */
+  function pageState() {
+    try {
+      return {
+        visibility: document.visibilityState || "visible",
+        frozen: !!document.frozen,
+        keepAwake: global.__NEMAPI_KEEP_AWAKE__ || "no",
+        timer: TimerHub.mode(),
+      };
+    } catch (_) {
+      return { visibility: "unknown", frozen: false, keepAwake: "no", timer: "timer" };
+    }
   }
 
   function findByText(selectors, patterns, root = document) {
@@ -673,7 +1138,20 @@
    * The result is flagged in global.__NEMAPI_LAST_PARTIAL__ when returned on
    * timeout.
    */
-  async function waitUntilStable(getText, { timeout = 180000, stableMs = 1800, pollMs = 400, previous = "", incompleteStableMs = 25000, busyGraceMs = 8000, getFinal = null } = {}) {
+  async function waitUntilStable(getText, {
+    timeout = 180000,
+    stableMs = 1800,
+    pollMs = 400,
+    previous = "",
+    incompleteStableMs = 25000,
+    busyGraceMs = 8000,
+    // Quiet window required when the PAGE ITSELF says it finished (no Stop
+    // button, action bar mounted). `stableMs` only has to cover the case where
+    // the page still claims to be generating; waiting it out on a finished
+    // answer was 1 to 2.8 s of pure latency per request.
+    idleStableMs = 900,
+    getFinal = null,
+  } = {}) {
     // The polling getter is CHEAP (a raw text read); the expensive markdown
     // conversion runs ONCE, when the answer is accepted. Rebuilding the
     // markdown every 400 ms was the main cost of the detection, and it
@@ -704,7 +1182,7 @@
       // any partial render of it. Virtualized lists (DeepSeek/Qwen) re-render
       // old messages as a truncated prefix of the full text.
       if (cur && prev) {
-        if (cur === prev) cur = "";
+        if (cur === prev || sameAnswer(cur, prev)) cur = "";
         else if (cur.length < prev.length && prev.startsWith(cur)) cur = "";
         else if (prev.length < cur.length && cur.startsWith(prev) && cur.length - prev.length < 8) {
           // still essentially the old message with trivial growth
@@ -726,7 +1204,7 @@
           // moving: bounded grace period (a pause while thinking), then take
           // the answer instead of waiting for a whole minute
           if (still >= busyGraceMs) return finish(cur);
-        } else if (still >= stableMs) {
+        } else if (still >= Math.min(stableMs, idleStableMs)) {
           // the page is idle and the text stopped moving: the answer is done.
           // An "unfinished looking" answer is NOT a reason to wait longer —
           // the proxy detects a call that was cut off and continues it.
@@ -737,7 +1215,7 @@
         lastFp = fp;
         stableSince = Date.now();
       }
-      await sleep(pollMs);
+      await sleepOrChange(pollMs);
     }
     if (last) {
       global.__NEMAPI_LAST_PARTIAL__ = true;
@@ -782,13 +1260,24 @@
    */
   async function waitForNewResponse(getMessageEls, readText, { timeout = 180000, stableMs = 2000, pollMs = 400, previous = "", newElTimeout = 25000, readCheap = null } = {}) {
     // The polling read is CHEAP (raw text); the markdown conversion is done
-    // once, at the end. Rebuilding the markdown on every poll was the main
-    // cost of the detection — and it grows with the length of the answer.
-    const cheap = readCheap || readText;
+    // once, at the end. DEFAULT to the plain textContent: a provider that
+    // forgets `readCheap` used to poll with the full markdown rebuild, which
+    // grows with the answer and made every wait O(n) per tick.
+    const cheap = readCheap || cheapText;
     const oldEls = getMessageEls() || [];
     const oldEl = lastOf(oldEls);
     const oldCount = oldEls.length;
-    const oldFp = textFingerprint(previous || (oldEl ? readText(oldEl) : ""));
+    // The reference for "this is still the previous answer" is the CHEAP text
+    // of the previous element itself, not the markdown computed before the
+    // job: the two representations differ (``` fences, links, emphasis), so a
+    // cheap poll compared against markdown would take the OLD answer for a
+    // NEW one. `previous` (markdown) stays as the fallback when the virtual
+    // list has already dropped that element.
+    let oldCheap = "";
+    try {
+      oldCheap = oldEl ? (cheap(oldEl) || "").trim() : "";
+    } catch (_) {}
+    const oldFp = textFingerprint(oldCheap || previous || "");
     const phase1End = Date.now() + newElTimeout;
     let newEl = null;
     let sawNewContent = false;
@@ -817,33 +1306,45 @@
         // a short one ("OK.", "Done.") — the old heuristic ("the new answer
         // must be half as long as the previous one") missed those, delaying
         // every short answer by the whole newElTimeout.
-        const isOldPrefix = !!previous && (previous === cur || previous.startsWith(cur));
+        const isOldPrefix =
+          !!cur &&
+          ((!!oldCheap && (oldCheap === cur || oldCheap.startsWith(cur))) ||
+            (!!previous && (previous === cur || previous.startsWith(cur))));
         if (fp && fp !== oldFp && !isOldPrefix) {
           sawNewContent = true;
           newEl = last;
           break;
         }
       }
-      await sleep(pollMs);
+      await sleepOrChange(pollMs);
     }
 
     const readLast = () => {
       const last = lastOf(getMessageEls());
       return last ? readText(last) : "";
     };
-    // No new bubble detected → keep filtering against `previous` so we don't
-    // return the old answer while streaming/idle.
+    // No new bubble detected → keep filtering against the PREVIOUS answer so
+    // the old text is never returned as this request's answer. The comparison
+    // uses the same cheap representation on both sides.
     if (!newEl && !sawNewContent) {
       return waitUntilStable(
         () => {
           const last = lastOf(getMessageEls());
-          return last ? cheap(last) : "";
+          let cur = "";
+          try {
+            cur = last ? (cheap(last) || "").trim() : "";
+          } catch (_) {}
+          if (!cur) return "";
+          const unchanged = cur === oldCheap || textFingerprint(cur) === oldFp;
+          const oldPrefix =
+            (!!oldCheap && oldCheap.startsWith(cur)) || (!!previous && previous.startsWith(cur));
+          return unchanged || oldPrefix ? "" : cur;
         },
         {
           timeout,
           stableMs,
           pollMs,
-          previous,
+          previous: "",
           getFinal: readLast,
         }
       );
@@ -1017,8 +1518,8 @@
     findSend,
     text,
     log,
-    attempts = 6,
-    sendTimeout = 6000,
+    attempts = 4,
+    sendTimeout = 5000,
     settleMs = 600,
     sendDisabledCheck = null,
   } = {}) {
@@ -1030,7 +1531,13 @@
       // a disabled surface (an upload in progress) is postponed, not dropped
       if (!(await waitEditable(el, 6000))) continue;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        const written = await writeAndConfirm(() => el, text, { attempts: 2, log });
+        // Only write when the composer does not already hold the prompt: an
+        // agent system prompt is tens of kilobytes, and rewriting it because
+        // the send control was slow re-renders the whole page for nothing.
+        const written =
+          attempt === 1 || !textMatches(editorText(el), want)
+            ? await writeAndConfirm(() => el, text, { attempts: 2, log })
+            : el;
         if (!written) {
           await sleep(200);
           continue;
@@ -2663,6 +3170,12 @@
 
   global.NemApiBase = {
     sleep,
+    sleepOrChange,
+    timerMode: TimerHub.mode,
+    cheapText,
+    sameAnswer,
+    keepTabAwake,
+    pageState,
     waitFor,
     queryFirst,
     queryAll,

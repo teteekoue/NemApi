@@ -626,3 +626,115 @@ perdue, puis une relance. L'ordre est inversé : `reportTabs()` **puis**
 récupération du job, la première requête aboutit du premier coup.
 
 Résultat : **268 tests passent, 0 échec, 0 ignoré**.
+
+## 14. v5.4.0 — L'onglet en arrière-plan, la vitesse par requête, l'onglet qui rame (2026-10-30)
+
+Quatre symptômes rapportés, une seule famille de causes : l'extension
+attendait la page avec des outils que Chrome étouffe, et elle relisait toute
+la réponse à chaque battement.
+
+### 1. « Ça finit instantanément quand je reviens sur l'onglet »
+
+**Symptôme** : une requête lancée depuis un autre programme (terminal, agent)
+aboutit, mais parfois elle reste bloquée plusieurs minutes — et se termine
+dès que l'onglet du fournisseur repasse au premier plan.
+
+**Cause** : Chrome étouffe les timers d'une page cachée (1 réveil par
+seconde), puis les limite à **un par minute** après cinq minutes en
+arrière-plan dès que la chaîne de timers atteint cinq appels (« intensive
+wake-up throttling », Chrome 88+). Toutes les boucles d'attente de NemApi
+étaient des chaînes de ce type : une vérification d'inactivité qui demandait
+1,5 s de calme se réveillait une minute plus tard. Ramener l'onglet au premier
+plan rend le palier normal — d'où l'impression que « regarder l'onglet
+débloque la requête ».
+
+Chrome peut aussi **geler** complètement un onglet caché et silencieux
+(Energy Saver, > 5 min, opt-outs documentés) : plus aucun timer, aucun
+observateur, aucun gestionnaire de message ne s'exécute.
+
+**Fix** :
+
+- `extension/providers/ticker.js` (nouveau) : un **Worker dédié** qui porte
+  les timers. Ses timers ne sont pas étouffés. `base.js:TimerHub` le sonde
+  (`ping`) avant de lui faire confiance, met au rancart un Worker muet, et
+  arme un garde-fou pour chaque attente (aucune requête ne peut rester
+  suspendue).
+- repli **`MessageChannel`** : le `setTimeout` est armé depuis une tâche
+  *message*, pas depuis une tâche *timer* — le niveau d'imbrication repart à
+  1, la chaîne n'atteint jamais 5, le palier « 1 par minute » ne s'applique
+  pas (1 s de granularité au pire). Couvre une page dont la CSP refuse le
+  Worker.
+- **Web Lock** (`B.keepTabAwake`, `mode: shared`) tenu par l'onglet : c'est
+  l'opt-out de gel que Chrome documente. Plus `autoDiscardable: false` côté
+  service worker pour la mise en veille mémoire.
+- `sleepOrChange` : les boucles sont réveillées par un `MutationObserver`
+  (microtâche, jamais étouffée) au lieu d'attendre leur prochain tick.
+
+### 2. Vitesse : le polling lisait toute la réponse 2,5 fois par seconde
+
+**Symptôme** : chaque requête coûtait plusieurs secondes de plus que le temps
+de génération, et l'onglet du fournisseur devenait poussif pendant la
+réponse.
+
+**Cause** : les boucles appelaient `getLastResponse()` — clone du DOM +
+`htmlToMarkdown` — à chaque tick de 400 ms. Mesure sur une réponse de 32 Ko :
+**44 ms** par appel (contre 0,3 ms pour une lecture brute), soit ~110 ms de
+fil principal par seconde **sur la page du fournisseur**, et un coût qui
+grandit avec la réponse.
+
+**Fix** : chaque provider expose `readCheapText` (lecture `textContent`, sans
+layout) et `getActivitySignature` (nombre de bulles + taille de la dernière) ;
+`waitForNewResponse` reçoit `readCheap` (défaut sûr : `textContent`) ;
+`waitUntilStable` lit bon marché et ne fait la conversion qu'à l'acceptation
+(`getFinal`). Les `innerText` des chemins chauds (`isGenerating`, `claude`)
+sont passés en `textContent`.
+
+### 3. Latence fixe par requête
+
+- plus de `await B.sleep(400/500/900/1000/1200)` en tête de chaque
+  `waitForResponse` (c'était payé à chaque requête, même quand la réponse
+  arrivait tout de suite) ;
+- attente d'inactivité : une sonde + 250 ms de confirmation au lieu de
+  2,4 s (deux polls de 800 ms et une fenêtre de calme de 1,5 s) ;
+- fin de réponse : quand la page se dit **prête**, 900 ms de calme suffisent
+  (`idleStableMs`) au lieu de 1,5–2,8 s ;
+- réécriture du prompt : `sendWithProof` ne retape plus un prompt de plusieurs
+  dizaines de Ko quand le composer le contient déjà ;
+- `take_wait` côté proxy : l'événement de réveil est vidé **avant**
+  l'inspection de la file (un job créé entre les deux attendait le tick
+  suivant, jusqu'à 500 ms, à chaque requête) ;
+- l'extension n'est plus réinjectée avant chaque job (`routerAlive` : un
+  `ping`), et le rapport d'onglets / la configuration ne sont plus attendus
+  devant le long-poll (ils retardaient la distribution du job suivant).
+
+### 4. « L'onglet du fournisseur rame et il faut le fermer »
+
+Même cause que (2) — c'est notre propre polling qui occupait le fil
+principal — plus deux effets de bord corrigés :
+
+- `content.js` ne laisse plus `__NEMAPI_RUNNING_JOB__` en place après un job
+  bloqué : un **chien de garde local** (budget + 30 s) libère l'onglet et
+  signale l'échec, au lieu de rejeter toutes les requêtes suivantes avec
+  « Tab is already running another job » jusqu'au rechargement ;
+- `background.js` ne sonde plus l'onglet par une réinjection de neuf fichiers
+  à chaque job, relance l'onglet qui a perdu son script (onglet déchargé,
+  plantage) au lieu de renvoyer « Receiving end does not exist », et protège
+  les onglets des fournisseurs de la mise en veille mémoire.
+
+### Divers
+
+- Un **envoi avalé** (onglet périmé, quota silencieux) est détecté en 20 s et
+  échoue franchement : la comparaison se fait entre deux **signatures**
+  d'activité, alors qu'elle comparait une signature à du markdown — donc
+  toujours « différent », donc jamais détecté.
+- Battement de cœur du contenu toutes les 15 s : le service worker libère un
+  job dont l'onglet est muet depuis 2 min (gelé, planté, rechargé) au lieu
+  d'attendre les 15 min du timeout.
+- `timer` est remonté avec chaque résultat (`worker` attendu ; `timer` ou
+  `message` = page qui refuse le Worker, à recharger) et journalisé.
+- Version : extension, proxy et interface en **5.4.0**.
+
+Résultat : **281 tests passent, 0 échec, 0 ignoré** (dont
+`tests/test_extension_timers.py`, qui verrouille les deux invariants de
+latence ; ses tests de comportement demandent Chromium, les contrôles
+statiques tournent partout).

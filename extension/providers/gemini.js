@@ -278,6 +278,30 @@
   }
 
   /**
+   * Cheap read of the current answer — what the polling loops use.
+   *
+   * `readModelText` clones the bubble, restores math, strips the action bar and
+   * runs htmlToMarkdown: O(answer). Running it on every 400 ms tick of a wait
+   * kept the tab's main thread busy for the whole answer (the page shares it
+   * with us) and grew worse as the answer got longer. The poll only needs to
+   * know whether the text moved.
+   */
+  function readCheapText(el) {
+    const root = el || getLastModelResponseEl();
+    return B.cheapText ? B.cheapText(root) : "";
+  }
+
+  /** Cheap "is something moving?" probe (bubble count + length of the last one). */
+  function getActivitySignature() {
+    try {
+      const last = getLastModelResponseEl();
+      return getResponseCount() + ":" + (last ? readCheapText(last).length : 0);
+    } catch (_) {
+      return "0:0";
+    }
+  }
+
+  /**
    * Is the model still streaming?
    *
    * Strict and local on purpose: a false positive is not free (the proxy
@@ -403,14 +427,16 @@
   }
 
   async function waitForResponse(previous = "", prevCount = 0) {
-    await B.sleep(500);
+    // No leading sleep: the bubble count gate already decides whether the
+    // answer is this turn's, and the loop must see the tokens as they land.
     await B.waitUntilStable(
       () => {
         if (prevCount && getResponseCount() <= prevCount) return "";
-        if (isGenerating() && !getLastResponse()) return "";
-        return getLastResponse();
+        const cheap = readCheapText();
+        if (isGenerating() && !cheap) return "";
+        return cheap;
       },
-      { timeout: 180000, stableMs: 1500, previous: "" }
+      { timeout: 180000, stableMs: 1500, previous: "", getFinal: getLastResponse }
     );
     try {
       return await extractPremium();
@@ -428,6 +454,8 @@
     waitForResponse,
     getLastResponse,
     getResponseCount,
+    getActivitySignature,
+    readCheapText,
     isGenerating,
     findInput,
   };
