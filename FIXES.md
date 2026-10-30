@@ -954,3 +954,74 @@ Le libellé de la page Configuration est corrigé en conséquence.
   OFF), une demande de flux reste honorée, et le 400 `streaming_disabled` est
   vérifié.
 - Suite complète : **223 tests passés, 0 échec**.
+
+## 19. v5.6.2 — Un très gros prompt n'est plus effacé et retapé en boucle (2026-10-30)
+
+### Le symptôme
+
+Tâche MonkeyCode arrivant à un prompt de **147 006 caractères** (mode
+classique : le contexte incrémental n'était pas activé, tout le prompt est donc
+tapé à chaque tour) :
+
+```
+12:53:22 Job error: DeepSeek: the prompt could not be written into the composer
+        (the page keeps clearing it)
+```
+
+puis cinq relances identiques. À l'écran : le prompt s'affiche dans le
+compositeur, disparaît, réapparaît — en boucle — et ne part jamais. Redémarrer
+le proxy n'y change rien : le défaut est dans l'extension.
+
+Les prompts de 100 à 142 KB passaient ; c'est le seuil qui rendait le défaut
+visible, pas un cas particulier.
+
+### Les deux causes
+
+**1. Une comparaison caractère par caractère.** `writeAndConfirm` (base.js)
+considérait la saisie réussie seulement si `editorText(el)` était **égal** au
+texte écrit. Or un éditeur riche ne restitue jamais fidèlement un texte de
+150 KB : il transforme les retours à la ligne en paragraphes, insère des espaces
+insécables, avale les lignes vides. La comparaison échouait sur un texte
+**présent**, l'appelant en concluait « le site l'a effacé », vidait le champ et
+retapait tout.
+
+**2. Un jugement trop tôt.** La lecture avait lieu 320 ms après l'insertion.
+Un éditeur riche **commite** un collage de 150 KB en plusieurs frames : à
+320 ms il ne contient qu'un préfixe. Même conclusion fausse, même boucle.
+
+Multipliées par l'échelle de tentatives (3 essais × 3 compositeurs), ces deux
+erreurs donnaient les 9 cycles effacer/retaper observés.
+
+### Le correctif
+
+- `base.js` — `composerMatches` : comparaison **exacte** en dessous de 4 000
+  caractères (un brouillon résiduel doit toujours être refusé), et au-delà
+  comparaison **sur le contenu** : mise en page normalisée d'abord, puis
+  tous les blancs retirés. Perdre un morceau de texte reste détecté.
+- `base.js` — `waitForComposerToSettle` : avant de juger un prompt de plus de
+  4 000 caractères, on attend que le compositeur cesse de grandir (deux
+  lectures identiques à 250 ms d'intervalle, 12 s au maximum).
+- `base.js` — `composerReport` : longueurs, premier caractère différent, et
+  **troncature** détectée, pour que l'erreur soit exploitable.
+- `deepseek.js` — une tentative ratée **n'efface plus** le compositeur (c'était
+  le clignotement) ; un prompt de plus de 40 000 caractères n'a droit qu'à
+  **une** tentative par éditeur ; si le compositeur contient déjà le prompt
+  (comparaison tolérante), il est **envoyé** au lieu d'être retapé ; et si le
+  site a réellement tronqué, le message le dit :
+  `(composer 100000c, wanted 150079c, the site truncated it — this prompt is too
+  large for this composer)`.
+- `completions.py` — en mode classique, un prompt de plus de 60 000 caractères
+  écrit un avertissement dans le journal : l'intégration de l'agent (contexte
+  incrémental) ne tape que le message nouveau.
+
+### Vérifications
+
+- `proxy/tests/test_extension_composer.py` : contrôles statiques, plus un
+  scénario qui charge **le vrai** `base.js` + `deepseek.js` dans un DOM et
+  envoie un prompt de 150 KB — commit lent (1,5 s), texte re-flowé, et site qui
+  tronque à 100 000 caractères (échec rapide et explicite, sans boucle).
+  Le harnais est versionné (`proxy/tests/js/long_prompt.mjs`), exécuté quand
+  `node` et `jsdom` sont disponibles, ignoré sinon.
+- Les tests existants des compositeurs courts (comparaison stricte, brouillon
+  résiduel non envoyé) passent inchangés.
+- Suite complète : **229 tests passés, 0 échec**.

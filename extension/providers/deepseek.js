@@ -117,6 +117,10 @@
    * `files` are File/Blob objects built by the content script from the API's
    * image_url parts. Returns the number of files the page accepted.
    */
+  // Why the last write failed (lengths, first difference, truncation): the
+  // error handed to the user must say what the site did, not "it failed".
+  let lastComposerReport = null;
+
   // Files attached for the NEXT message. `sendPrompt` only waits for an
   // upload when there is one: that wait is useless (and can last its whole
   // timeout) for the 99 % of sends that carry no image.
@@ -638,6 +642,10 @@
     const target = el || findInput();
     if (!target) return false;
     const dom = editorText(target);
+    const text = String(want || "");
+    // a 150 KB prompt is compared on its normalised form: the editor rewrites
+    // newlines and NBSP, and an exact check says "wiped" forever
+    if (text.length > 4000 && B.composerMatches) return B.composerMatches(dom, text);
     if (!B.textMatches(dom, want)) return false;
     const react = B.readReactValue(target);
     return react === null || B.textMatches(react, want);
@@ -665,7 +673,12 @@
     // 3 attempts, not 8: with two editions in each and a 2.5 s wait for the
     // send control, the old ladder could sleep for two minutes on a page that
     // never enables it, before trying the next editor (three of them).
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    //
+    // A very large prompt gets ONE attempt: typing 150 KB takes seconds, and
+    // redoing it in a loop is what the user sees as "the text appears and
+    // disappears without being sent".
+    const attempts = want.length > 40000 ? 1 : 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const written = await B.writeAndConfirm(() => target, text, {
         attempts: 1,
         log: (m) => log(m),
@@ -718,7 +731,9 @@
     if (!cands.length) throw new Error("DeepSeek: composer not found");
     let input = null;
     let btn = null;
+    let lastTried = null;
     for (const el of cands.slice(0, 3)) {
+      lastTried = el;
       const res = await typePrompt(text, el);
       if (res) {
         input = res.input;
@@ -726,13 +741,40 @@
         break;
       }
       log("this editor did not take the text → trying the next one");
-      try {
-        B.setTextareaValue(el, "");
-      } catch (_) {}
+      // NO clear here: the next write clears the field itself, and clearing
+      // now erased the only evidence of what the site had accepted (it also
+      // produced the visible flicker: text appears, disappears, appears…).
+      if (!lastComposerReport && B.composerReport) {
+        try {
+          lastComposerReport = B.composerReport(editorText(el), want);
+        } catch (_) {}
+      }
     }
     if (!input || !btn) {
+      // The last editor may already hold the prompt even though our
+      // confirmation failed (normalisation, or the site truncated it): send it
+      // rather than clearing everything and starting over a fourth time.
+      const last = lastTried || findInput();
+      if (last && want && B.composerMatches && B.composerMatches(editorText(last), want)) {
+        log("the composer holds the prompt (tolerated comparison) → sending it");
+        input = last;
+        btn = findSend(last);
+      }
+    }
+    if (!input || !btn) {
+      const last = lastTried || findInput();
+      let r = last && B.composerReport ? B.composerReport(editorText(last), want) : null;
+      // the composer may have been emptied by a retry: keep what we measured
+      if (lastComposerReport && (!r || r.dom === 0)) r = lastComposerReport;
+      const detail = r
+        ? ` (composer ${r.dom}c, wanted ${r.want}c` +
+          (r.truncated
+            ? ", the site truncated it — this prompt is too large for this composer"
+            : ", first difference at " + r.firstDiff) +
+          ")"
+        : "";
       throw new Error(
-        "DeepSeek: the prompt could not be written into the composer (the page keeps clearing it)"
+        "DeepSeek: the prompt could not be written into the composer" + detail
       );
     }
 

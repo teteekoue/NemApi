@@ -391,6 +391,65 @@
    * still "contains" our text, but the message that would be sent is the
    * concatenation of the two. The composer check must be exact.
    */
+  /**
+   * Compare a composer's content with what we wrote, TOLERANTLY for long text.
+   *
+   * A 100 to 150 KB prompt cannot be compared character for character with the
+   * DOM: a rich editor turns newlines into <br> / paragraphs, inserts
+   * non-breaking spaces, and may normalise trailing blanks. `textEquals` then
+   * never succeeds, and the caller — which believes the text was wiped —
+   * clears the field and types it again: the user sees the prompt appear and
+   * disappear in a loop, and the message is never sent.
+   *
+   * The comparison therefore runs on a normalised form (line endings, NBSP,
+   * runs of spaces, empty lines) and, above 4 000 characters, ALSO accepts the
+   * case where the editor kept our text minus a normalisation difference —
+   * but never a truncation, which is reported separately by
+   * `composerReport` so the caller can say what the site did.
+   */
+  function normalizeComposer(value) {
+    return String(value ?? "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u00a0\u2007\u202f]/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/ *\n */g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  /** Every character kept, all layout dropped: what "the text is there" means. */
+  function compactComposer(value) {
+    return String(value ?? "").replace(/\s+/g, "");
+  }
+
+  function composerMatches(observed, want) {
+    if (textEquals(observed, want)) return true;
+    if (!String(want ?? "").trim()) return false;
+    const a = normalizeComposer(observed);
+    const b = normalizeComposer(want);
+    if (a === b) return true;
+    // Below this size the exact comparison is the right one (a leftover draft
+    // must never be accepted); above it, no editor round-trips whitespace
+    // faithfully and the check must be about the CONTENT.
+    if (String(want ?? "").length <= 4000) return false;
+    return compactComposer(a) === compactComposer(b);
+  }
+
+  /** Why a write failed, in numbers — logged and shown to the caller. */
+  function composerReport(observed, want) {
+    const a = String(observed ?? "");
+    const b = String(want ?? "");
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+    return {
+      dom: a.length,
+      want: b.length,
+      firstDiff: i,
+      truncated: a.length > 0 && a.length < b.length * 0.98,
+      matches: composerMatches(a, b),
+    };
+  }
+
   function textEquals(observed, want) {
     const a = String(observed || "").trim();
     const b = String(want || "").trim();
@@ -755,6 +814,32 @@
    * `findEl` is called again on every attempt: React may have replaced the
    * node entirely (a remount discards the text that was written on it).
    */
+  /**
+   * Wait until the composer stops growing (a long insert is committed in
+   * several frames by Lexical/ProseMirror). Bounded: 12 s, or two identical
+   * readings 250 ms apart.
+   */
+  async function waitForComposerToSettle(el, { timeout = 12000, step = 250 } = {}) {
+    const t0 = Date.now();
+    let last = -1;
+    let same = 0;
+    while (Date.now() - t0 < timeout) {
+      let n = 0;
+      try {
+        n = editorText(el).length;
+      } catch (_) {}
+      if (n > 0 && n === last) {
+        same += 1;
+        if (same >= 2) return n;
+      } else {
+        same = 0;
+      }
+      last = n;
+      await sleep(step);
+    }
+    return last;
+  }
+
   async function writeAndConfirm(findEl, text, { attempts = 5, holdMs = 320, settleMs = 600, log } = {}) {
     const want = String(text ?? "").trim();
     if (!want) return null;
@@ -774,30 +859,38 @@
       }
       setTextareaValue(el, text);
       await sleep(holdMs);
+      // A very long prompt is not committed in 320 ms: the rich editor keeps
+      // rendering it, and reading it now returns a PREFIX. Judging that
+      // prefix as "the app wiped the text" made the caller clear the composer
+      // and type the whole 150 KB again — the loop the user saw. Wait until
+      // the editor stops growing before comparing.
+      if (want.length > 4000) await waitForComposerToSettle(el);
       // The app may re-render right after (the end of an upload): a text
       // written too early is wiped when it restores its own state. The check
       // is therefore made TWICE, with a settle window in between.
+      // long prompts: a character-for-character comparison with the DOM is
+      // impossible (see composerMatches) — that mismatch is what made a
+      // 150 KB prompt loop between "typed" and "cleared"
+      const match = want.length > 4000 ? composerMatches : textEquals;
       const dom = editorText(el);
       const react = readReactValue(el);
-      const ok = textEquals(dom, want) && (react === null || textEquals(react, want));
+      const ok = match(dom, want) && (react === null || match(react, want));
       if (ok) {
         await sleep(settleMs);
         const dom2 = editorText(el);
         const react2 = readReactValue(el);
-        if (
-          textEquals(dom2, want) &&
-          (react2 === null || textEquals(react2, want))
-        ) {
+        if (match(dom2, want) && (react2 === null || match(react2, want))) {
           return el;
         }
         if (log) log(`write attempt ${attempt}: wiped by a re-render, retrying`);
         continue;
       }
       if (log) {
+        const r = composerReport(dom, want);
         log(
-          `write attempt ${attempt}: dom=${dom.length}c react=${
-            react === null ? "n/a" : react.length + "c"
-          } confirmed=${ok}`
+          `write attempt ${attempt}: dom=${r.dom}c want=${r.want}c ` +
+            `first diff at ${r.firstDiff}${r.truncated ? " (the site truncated the prompt)" : ""} ` +
+            `react=${react === null ? "n/a" : react.length + "c"}`
         );
       }
       await sleep(200);
@@ -3019,5 +3112,9 @@
     isUserMessageContext,
     isAssistantMessageContext,
     scoreMessageCopyButton,
+    composerMatches,
+    composerReport,
+    normalizeComposer,
+    compactComposer,
   };
 })(typeof window !== "undefined" ? window : self);

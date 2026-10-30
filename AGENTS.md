@@ -643,6 +643,15 @@ de version cassait le build à chaque fois.
   version ne démarre pas un second routeur, une version plus récente reprend la
   main. **Incrémenter `CS_VERSION` à chaque livraison touchant l'extension** —
   c'est ce qui remplace un routeur orphelin dans un onglet déjà ouvert.
+- **Ne jamais juger un compositeur riche sur son texte exact** au-delà de
+  4 000 caractères, et jamais 320 ms après l'insertion : un éditeur riche
+  re-formate le texte (paragraphes, espaces insécables, lignes vides) et
+  **commite** un gros collage en plusieurs frames. `B.composerMatches`
+  (contenu, mise en page ignorée) et `waitForComposerToSettle` existent pour
+  cela. S'y tromper fait effacer et retaper le prompt en boucle — le pire
+  symptôme possible : le message ne part jamais et le doute porte sur le réseau.
+- Une tentative de saisie ratée ne doit **rien effacer** : le clignotement
+  « texte qui apparaît et disparaît » n'a pas d'autre cause.
 - Un prompt de plus de 8 000 caractères est écrit en **une seule** opération
   (`setValue` natif) : le pipeline `execCommand` par éditeur prend des minutes
   sur 100 KB. En dessous, il reste le meilleur chemin.

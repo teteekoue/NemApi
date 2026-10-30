@@ -211,6 +211,15 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
         f"Completion → {prep.provider}/{prep.response_model} stream={prep.stream} "
         f"tools={len(prep.tool_names)} prompt={len(prep.prompt)}c {mode}"
     )
+    # A 100 KB prompt typed in full is slow and fragile (the site's composer
+    # has its limits, and an editor that truncates it can never be confirmed).
+    # The agent integration types only what is new: say it, once per request.
+    if prep.integration is None and len(prep.prompt) > 60000:
+        ctx.logs.warn(
+            f"Prompt de {len(prep.prompt)}c tapé en entier (mode classique) : "
+            "active « Intégration agents IA » pour cet agent — le contexte incrémental "
+            "ne tape que le message nouveau"
+        )
     job = ctx.sessions.find_inflight(prep.plan) if prep.plan is not None else None
     if job is not None:
         ctx.logs.info(f"Contexte incrémental: requête relancée → attend le job en cours {job.short_id} (pas de renvoi)")

@@ -1,10 +1,16 @@
-# NemApi v5.6.0
+# NemApi v5.6.2
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+## v5.6.2 — Un très gros prompt n'est plus effacé et retapé en boucle
+
+- ✅ **« the prompt could not be written into the composer »** sur une tâche d'agent à 147 000 caractères : le texte s'affichait, disparaissait, revenait, sans jamais partir. Deux causes, corrigées : (1) la confirmation de saisie comparait le compositeur **caractère par caractère**, ce qu'aucun éditeur riche ne peut satisfaire sur 150 KB ; (2) elle jugeait le compositeur 320 ms après l'insertion, alors qu'un éditeur riche **commite** un gros collage en plusieurs frames — on lisait un préfixe, on croyait à un effacement, on vidait tout et on recommençait. La confirmation est maintenant **tolérante sur la mise en page** (le contenu doit être identique) et **attend la fin du commit**. Si le site **tronque** réellement le prompt, l'erreur le dit en chiffres au lieu de boucler
+- ✅ **Aucune tentative ratée n'efface plus le compositeur** (c'était le clignotement visible), et un prompt de plus de 40 000 caractères n'a droit qu'à **une** tentative par éditeur au lieu de trois
+- ✅ **Journal** : en mode classique, un prompt de plus de 60 000 caractères déclenche un avertissement qui rappelle l'intérêt du contexte incrémental
 
 ## v5.6.1 — Le test de connexion de MonkeyCode pouvait enfin enregistrer le modèle
 
