@@ -109,3 +109,49 @@ def test_a_150kb_prompt_is_sent_once_and_never_loops():
     # the scenario really went through the 150 KB send
     assert "a 150 KB prompt committed over 1.5 s is sent" in result.stdout
     assert json.dumps("a re-flowed long prompt is sent (tolerant comparison)").strip('"') in result.stdout
+
+
+# ------------------------------------------------- the send control of a site
+def test_the_send_prompt_is_written_once_and_the_control_is_searched_for():
+    base = (EXT / "providers" / "base.js").read_text()
+    body = base[base.index("async function sendWithProof("):]
+    body = body[: body.index("/**\n   * Click the send control")]
+    # one write per surface: the re-paste loop came from rewriting on every try
+    assert "attempts: 1, log" in body
+    assert "if (!holds(el))" in body
+    # an unknown send control falls back to Enter, then to the next surface
+    assert "pressEnter(el)" in body
+    assert "no usable send control" in body
+
+
+def test_kimi_and_zai_can_find_a_composer_they_no_longer_know():
+    for name in ("kimi", "zai"):
+        source = (EXT / "providers" / f"{name}.js").read_text()
+        assert "B.discoverEditable" in source, f"{name}: no composer fallback"
+        assert "B.discoverSend" in source, f"{name}: no send-control fallback"
+
+
+def test_deepseek_composer_code_is_left_alone():
+    """The user's constraint: DeepSeek works, do not touch its selectors."""
+    deepseek = (EXT / "providers" / "deepseek.js").read_text()
+    assert "discoverEditable" not in deepseek
+    assert "discoverSend" not in deepseek
+    # and it keeps its own send path (not the shared sendWithProof)
+    assert "B.sendWithProof" not in deepseek
+
+
+def test_the_send_control_harness_runs_the_real_extension():
+    """The Kimi re-paste loop, replayed on the real base.js in a DOM."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    harness = Path(__file__).resolve().parent / "js" / "send_control.mjs"
+    result = subprocess.run(
+        [node, str(harness)], capture_output=True, text=True, cwd=ROOT, timeout=240
+    )
+    print(result.stdout)
+    if result.returncode == 77:
+        pytest.skip("jsdom is not installed (npm install jsdom)")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all checks passed" in result.stdout
+    assert "written exactly once (no re-paste loop)" in result.stdout

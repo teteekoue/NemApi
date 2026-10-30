@@ -1025,3 +1025,95 @@ erreurs donnaient les 9 cycles effacer/retaper observés.
 - Les tests existants des compositeurs courts (comparaison stricte, brouillon
   résiduel non envoyé) passent inchangés.
 - Suite complète : **229 tests passés, 0 échec**.
+
+## 20. v5.6.3 — Kimi collait la requête en boucle, DeepSeek renvoyait son DSML (2026-10-30)
+
+Deux défauts distincts, remontés dans le même essai : « kimi collait la requête
+en boucle dans la barre de saisie sans jamais l'envoyer » et « deepseek ne
+respecte pas le format d'appel d'outil de monkeycode, il hallucine toujours le
+DSML ». Le périmètre demandé a été tenu : **les sélecteurs de DeepSeek n'ont pas
+été touchés**, et pour DeepSeek seul le **prompt** et le **décodage de la
+réponse** ont changé.
+
+### La boucle de collage (Kimi, Z.ai)
+
+`sendWithProof` (base.js) parcourait ses compositeurs candidats et, pour chacun,
+faisait `attempts` essais. À chaque essai il **réécrivait le prompt entier**
+(`writeAndConfirm` : `textContent = ""` puis recollage) quand le bouton d'envoi
+n'était pas trouvé — et il ne savait que **cliquer** : aucun repli sur Entrée.
+Un seul sélecteur d'envoi périmé suffisait donc à produire exactement ce que
+l'utilisateur voyait : le texte apparaît, disparaît, réapparaît, et ne part
+jamais.
+
+Correctif, sans changer l'ordre des tentatives :
+
+- le prompt est écrit **une seule fois** par surface (`attempts: 1` côté
+  écriture) ; une surface qui ne « tient » pas le texte est abandonnée, pas
+  réécrite ;
+- `discoverSend(near)` : quand aucun sélecteur connu ne matche, on cherche
+  **le petit élément cliquable** au bas du compositeur (listes `BAD`/`GOOD` pour
+  écarter « modèle », « pièce jointe », « micro ») ;
+- `pressEnter(el)` : si rien d'utilisable n'est cliquable, **Entrée** est
+  essayée (beaucoup de sites envoient sur Entrée) ;
+- le nettoyage de la surface n'a lieu qu'**en sortie de parcours**, plus à
+  chaque tentative ;
+- un journal explicite : `no usable send control (attempt …, found=…)`.
+
+Côté sélecteurs (Kimi et Z.ai uniquement) : `INPUT` accepte
+`[class*="chat-input"] [contenteditable]`, `[data-testid*="editor"]`… et
+`inputCandidates()` retombe sur `B.discoverEditable()` (le plus grand
+`textarea`/`contenteditable` visible, bonus s'il est en bas de l'écran) ;
+`findSend()` retombe sur `B.discoverSend()`.
+
+### Le DSML de DeepSeek
+
+Le dialecte natif **multi-appels** :
+
+```
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file
+{"file_path": "a.py"}<｜tool▁call▁end｜><｜tool▁call▁begin｜>…
+```
+
+n'était **pas** reconnu (0 appel) : le balisage partait tel quel dans la
+conversation, d'où « le modèle ne respecte pas le format ». Un regex
+« tout-en-un » a d'abord échoué (l'ordre des tokens varie) ; la solution est un
+analyseur **ligne à ligne** (`_dsv3_calls`) branché avant le cas simple :
+
+- plusieurs appels dans un même bloc → tous convertis ;
+- tokens internes présents ou non, bloc non fermé, `function`/`<｜tool▁sep｜>`
+  dupliqués ou perdus par l'extraction DOM ;
+- arguments **JSON sur plusieurs lignes** et arguments entourés d'une clôture
+  markdown (le modèle copie l'habitude « JSON dans un bloc de code ») ;
+- la ligne de clôture ``` n'est jamais prise pour un nom d'outil ;
+- **la prose qui suit un bloc non fermé est conservée** : sans jeton de fin, un
+  nom d'outil **connu** de la requête est la seule chose qui distingue un appel
+  de la phrase écrite après (sans ce garde-fou, « Je continue après… » devenait
+  un appel d'outil `Je` et disparaissait de la réponse).
+
+Le prompt d'outils (`serialize_tools_prompt`) **liste désormais les syntaxes
+interdites** — `｜DSML｜tool_calls` / `｜DSML｜invoke` / `｜DSML｜parameter`,
+`｜tool▁call▁begin｜`, `<function_calls>`, `<invoke>/<parameter>`, bloc `json`
+clos et objet JSON nu — et rappelle que **la page est une interface de chat**,
+dont le balisage natif n'est pas interprété : seul le bloc ```` ```tool ```` l'est.
+
+Enfin, une réponse qui contient **encore** du balisage natif non convertible
+écrit un avertissement nommant le dialecte (`Réponse en dialecte d'outils natif
+(DSML)…`) : le prochain échantillon suffira à compléter l'analyseur, au lieu
+d'un échec silencieux.
+
+### Vérifications
+
+- `proxy/tests/test_tool_parsing.py` : le test du dialecte V3 passe (il servait
+  de sonde rouge), plus cinq tests neufs — plusieurs appels, tokens internes
+  absents / bloc non fermé, arguments multi-lignes, deux `<invoke>` DSML, et la
+  prose d'après bloc non fermé préservée.
+- `proxy/tests/test_completions.py` : deux appels V3 dans une seule réponse →
+  deux `tool_calls` et un `content` propre ; un dialecte non convertible →
+  avertissement « dialecte » dans le journal.
+- `proxy/tests/js/send_control.mjs` (nouveau, jsdom) exécute **le vrai**
+  `base.js` : bouton d'envoi inconnu → découvert et cliqué, **une seule
+  écriture** ; aucun bouton → Entrée ; site qui refuse tout → échec borné et
+  journalisé, sans recollage. `test_extension_composer.py` le lance (ignoré si
+  `node`/`jsdom` absents) et vérifie que les sélecteurs de DeepSeek restent
+  seuls.
+- Suite complète : **240 tests passés, 6 ignorés**.

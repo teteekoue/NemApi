@@ -10,7 +10,7 @@
   // still holds `__NEMAPI_RUNNING_JOB__`. Re-injecting the SAME version must
   // not start a second router (two runs of one job), but a NEWER one has to
   // take over — an old router that cannot answer is worse than none.
-  const CS_VERSION = "5.6.2";
+  const CS_VERSION = "5.6.3";
   if (window.__NEMAPI_CS_VERSION__ === CS_VERSION) return;
   window.__NEMAPI_CS_VERSION__ = CS_VERSION;
   window.__NEMAPI_CS__ = true;

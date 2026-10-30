@@ -107,6 +107,15 @@ convient qu'à un seul d'entre eux :**
 `base.js:setTextareaValue` distingue ces cas ; `base.js:sendWithProof`
 essaie chaque surface candidate jusqu'à ce qu'une prenne le texte.
 
+**Une surface n'est écrite qu'une fois** (`attempts: 1`) : réécrire le prompt à
+chaque tentative produisait la boucle signalée sur Kimi — le texte apparaissait,
+disparaissait, revenait, sans jamais partir, parce que le sélecteur d'envoi avait
+vieilli et que rien ne cherchait le bouton autrement. Quand aucun sélecteur ne
+matche, `discoverSend(near)` cherche **le petit élément cliquable** au bas du
+compositeur et `pressEnter(el)` essaie **Entrée** (beaucoup de sites envoient
+ainsi) ; `discoverEditable()` trouve le compositeur par sa taille, pas par sa
+classe. Un provider peut donc survivre à un renommage de classes sans boucler.
+
 Règles qui découlent des bugs déjà payés :
 
 - **Écrire dans le bon type d'élément.** Un `contenteditable` et un
@@ -474,8 +483,21 @@ courant, son contexte est de son côté.
 
 `utils/tools_format.py` (~900 l.) est le point de concentration de
 complexité : il doit comprendre le format ````tool` (fence ```` + ligne
-`<tool>{json}</tool>`), le DSML de DeepSeek, le XML de Qwen3-Coder, les
-`<invoke>`, et le JSON tolérant.
+`<tool>{json}</tool>`), le DSML de DeepSeek, le dialecte natif **multi-appels**
+`<｜tool▁calls▁begin｜>…`, le XML de Qwen3-Coder, les `<invoke>`, et le JSON
+tolérant.
+
+**Le dialecte V3 de DeepSeek se lit ligne à ligne** (`_dsv3_calls`), jamais avec
+un regex « tout-en-un » : l'ordre des tokens varie (tokens internes
+`call_begin`/`call_end` présents ou non, `function`/`<｜tool▁sep｜>` perdus par
+l'extraction DOM, bloc non fermé), un regex global rend 0 appel alors que le
+dialecte est lisible. Ne pas oublier de retirer les lignes de clôture markdown :
+le modèle encadre ses arguments d'un ````json`, et cette ligne serait sinon
+prise pour un nom d'outil.
+
+Quand un dialecte reste **non convertible**, `services/completions.py` écrit un
+avertissement qui nomme le dialecte (`Réponse en dialecte d'outils natif (DSML)`)
+au lieu de laisser le balisage partir en silence dans la conversation.
 
 Règle non négociable : **le texte restant ne doit jamais contenir de
 résidus d'appel d'outils** (ni fence, ni `<tool>`, ni tag DSML). L'agent
@@ -590,6 +612,18 @@ erreur JavaScript, **aucune icône SVG sans la classe `ico`** (un SVG sans
 largeur occupe son conteneur), les prix de référence affichés avec leur
 date de vérification, et la carte de chaque agent qui explique comment
 NemApi le reconnaît.
+
+Deux harnais **jsdom** (pas de navigateur à installer) rejouent le vrai
+`base.js` dans un DOM : `tests/js/long_prompt.mjs` (collage de 150 KB, commit
+lent, site qui tronque) et `tests/js/send_control.mjs` (bouton d'envoi inconnu ou
+absent : une seule écriture, repli sur Entrée, échec borné et journalisé). Sans
+`jsdom`, ils sont *ignorés* — installer hors du dépôt pour ne pas y versionner
+`node_modules` :
+
+```bash
+mkdir -p /tmp/js && cd /tmp/js && npm init -y && npm install jsdom
+cd - && NODE_PATH=/tmp/js/node_modules .venv/bin/python -m pytest -q
+```
 
 Dépendances de test nécessaires (sinon les tests sont *ignorés*, pas échoués) :
 

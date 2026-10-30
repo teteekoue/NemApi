@@ -407,3 +407,50 @@ async def test_long_poll_counts_as_heartbeat(server_factory):
         await asyncio.sleep(0.8)
         assert (await c.get("/health")).json()["extension"] is True
         await poll
+
+
+async def test_native_tool_dialect_left_in_the_answer_is_reported(server):
+    """Two calls in one DeepSeek-V3 block are converted (multi-call support).
+
+    When a dialect cannot be converted at all, the markup must NOT reach the
+    agent silently: a warning names the dialect so the analyser can be completed.
+    """
+    async def responder(job):
+        return "result", (
+            "Je lis les deux fichiers.\n"
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n{\"path\": \"a.py\"}<｜tool▁call▁end｜>"
+            "<｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n{\"path\": \"b.py\"}<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+        )
+
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+    async with FakeExtension(server.url, responder=responder):
+        async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
+            r = await c.post("/v1/chat/completions",
+                             json={"model": "deepseek-chat", "messages": MSG, "tools": tools, "stream": False})
+            choice = r.json()["choices"][0]
+            assert choice["finish_reason"] == "tool_calls"
+            assert [json.loads(tc["function"]["arguments"]) for tc in choice["message"]["tool_calls"]] == [
+                {"path": "a.py"}, {"path": "b.py"}
+            ]
+            assert choice["message"]["content"] == "Je lis les deux fichiers."
+            logs = (await c.get("/extension/state")).json()["logs"]
+            assert not any("dialecte" in entry["msg"] for entry in logs)
+
+
+async def test_unparsable_native_dialect_warns_once(server):
+    async def responder(job):
+        # a half-extracted dialect (opening captured, closing cut by the page):
+        # nothing can be converted
+        return "result", 'ok <function_calls>'
+
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+    async with FakeExtension(server.url, responder=responder):
+        async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
+            r = await c.post("/v1/chat/completions",
+                             json={"model": "deepseek-chat", "messages": MSG, "tools": tools, "stream": False})
+            # an unknown tool name cannot be executed: the text is handed back as-is
+            assert r.json()["choices"][0]["finish_reason"] != "tool_calls"
+            logs = (await c.get("/extension/state")).json()["logs"]
+            assert any("dialecte" in entry["msg"] and "function_calls" in entry["msg"] for entry in logs)

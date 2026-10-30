@@ -1,6 +1,7 @@
 """Chat-completion pipeline: validate → build prompt → queue job → post-process."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -195,6 +196,22 @@ def run_local(ctx: AppContext, prep: PreparedCompletion) -> CompletionResult:
     return CompletionResult(local.text, list(local.tool_calls), approx_tokens(prep.prompt), approx_tokens(local.text))
 
 
+_NATIVE_MARKUP_RE = (
+    ("DSML", re.compile(r"DSML", re.I)),
+    ("tool▁call", re.compile(r"tool\u2581call")),
+    ("<function_calls>", re.compile(r"<function[_-]?calls", re.I)),
+    ("<invoke>", re.compile(r"<invoke\s+name=", re.I)),
+)
+
+
+def _native_tool_markup(text: str) -> str:
+    """The native tool markup still present in an answer ('' = clean)."""
+    for label, rx in _NATIVE_MARKUP_RE:
+        if rx.search(text or ""):
+            return label
+    return ""
+
+
 def _agent(prep: PreparedCompletion) -> str:
     return prep.integration.agent.name if prep.integration else "Agent"
 
@@ -250,6 +267,15 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
     parsed = job.parsed or postprocess(
         job.result, prep.tool_names, prep.tools, generic=(prep.tool_mode == "native")
     )
+    # A model that answers in its own native tool dialect is a real failure of
+    # the agent: the markup reaches it as text and no tool is executed. Say it
+    # once, with a sample, instead of failing silently.
+    leftover = _native_tool_markup(parsed.text)
+    if leftover:
+        ctx.logs.warn(
+            f"Réponse en dialecte d'outils natif ({leftover}) : l'appel n'a pas pu être converti "
+            "en tool_calls. Envoie un extrait de la réponse pour compléter l'analyseur."
+        )
     # usage/cost always reflect the full conversation (what an API would bill),
     # even when only a delta was typed into the web UI
     prompt_tokens = approx_tokens(prep.prompt)

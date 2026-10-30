@@ -270,3 +270,67 @@ def test_four_backtick_fence_parsing_variants():
         remaining, calls = parse_tool_calls(text, ["run_shell_command"])
         assert remaining == "Je lance.", (text, remaining)
         assert json.loads(calls[0]["function"]["arguments"]) == call["arguments"]
+
+
+def test_deepseek_v3_several_calls_are_all_taken():
+    """An agent asks for three files: the model answers with a CALLS block.
+
+    That form was not parsed at all before: the raw markup went back to the
+    agent as text — "the model does not respect the tool format".
+    """
+    text = (
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n{\"file_path\": \"a.py\"}<｜tool▁call▁end｜>"
+        "<｜tool▁call▁begin｜>function<｜tool▁sep｜>run_shell_command\n{\"command\": \"ls\"}<｜tool▁call▁end｜>"
+        "<｜tool▁calls▁end｜>"
+    )
+    rest, calls = calls_of(text)
+    assert rest == ""
+    assert calls == [("read_file", {"file_path": "a.py"}), ("run_shell_command", {"command": "ls"})]
+
+
+def test_deepseek_v3_without_the_inner_tokens_or_closing_them():
+    """A DOM extraction loses the last token; a model forgets the end tag."""
+    text = (
+        "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>read_file\n{\"file_path\": \"a\"}<｜tool▁call▁end｜>"
+        "function<｜tool▁sep｜>glob\n{\"pattern\": \"*\"}<｜tool▁call▁end｜>"
+    )
+    _, calls = calls_of(text)
+    assert calls == [("read_file", {"file_path": "a"}), ("glob", {"pattern": "*"})]
+
+    rest, calls = calls_of("ok <｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n{\"p\": 1}")
+    assert rest == "ok" and calls == [("read_file", {"p": 1})]
+
+
+def test_deepseek_v3_pretty_printed_arguments():
+    text = (
+        "<｜tool▁call▁begin｜>function<｜tool▁sep｜>write_file\n"
+        '{\n  "file_path": "b.py",\n  "content": "print(1)"\n}'
+        "<｜tool▁call▁end｜>"
+    )
+    _, calls = calls_of(text)
+    assert calls == [("write_file", {"file_path": "b.py", "content": "print(1)"})]
+
+
+def test_two_dsml_invokes_in_one_block():
+    text = (
+        "<｜DSML｜tool_calls>"
+        '<｜DSML｜invoke name="read_file"><｜DSML｜parameter name="path" string="true">a.py</｜DSML｜parameter></｜DSML｜invoke>'
+        '<｜DSML｜invoke name="glob"><｜DSML｜parameter name="pattern" string="true">*</｜DSML｜parameter></｜DSML｜invoke>'
+        "</｜DSML｜tool_calls>"
+    )
+    _, calls = calls_of(text)
+    assert calls == [("read_file", {"path": "a.py"}), ("glob", {"pattern": "*"})]
+
+
+def test_an_unclosed_v3_block_does_not_swallow_the_prose_after_it():
+    """Without a closing token, a known name is all that tells a call from prose."""
+    text = ('ok <｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file\n{"file_path": "a"}\n\n'
+            "Je continue après, voici la suite.")
+    rest, calls = calls_of(text)
+    assert calls == [("read_file", {"file_path": "a"})]
+    assert "Je continue après" in rest
+    # a name the request never offered is not a call (an unknown tool would
+    # never be executed: it must not be invented)
+    rest, calls = calls_of('ok <｜tool▁call▁begin｜>function<｜tool▁sep｜>bonjour\n{"x": 1}')
+    assert calls == [] and "bonjour" in rest

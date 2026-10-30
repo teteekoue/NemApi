@@ -301,7 +301,12 @@ def serialize_tools_prompt(tools: Optional[List[Dict[str, Any]]]) -> str:
             "- ALWAYS put the <tool> line inside that " + TOOL_FENCE + "tool fence: this page renders markdown, "
             "and only text inside a code block reaches the tool unchanged (outside it, backslashes, $ signs, "
             "quotes and URLs get altered).",
-            "- Do NOT use any other tool-call syntax (no DSML, no <function_calls>, no <invoke>/<parameter> tags).",
+            "- Do NOT use any other tool-call syntax. None of these are executed, and they are shown "
+            "to the user as raw text: \uFF5CDSML\uFF5Ctool_calls / \uFF5CDSML\uFF5Cinvoke / "
+            "\uFF5CDSML\uFF5Cparameter, \uFF5Ctool\u2581call\u2581begin\uFF5C, <function_calls>, "
+            "<invoke>/<parameter>, a fenced json block, or a bare JSON object.",
+            "- This page is a CHAT interface, not the model's API: its native tool markup is not parsed "
+            "here. Only the fenced <tool> block above is.",
             "- One fenced <tool> block per call; for several calls write several fenced blocks.",
             "- The content must be valid JSON on one line: inside strings write \\\" for a double quote, "
             "\\\\ for a backslash and \\n for a newline (so a literal \\n in a shell or sed command is "
@@ -436,6 +441,101 @@ _SPECIAL_TOKEN_RE = re.compile(
     rf"<\s*{_BAR}\s*tool[▁_ ]sep\s*{_BAR}\s*>",
     re.I,
 )
+# DeepSeek V3 special-token dialect, in every form seen in the wild:
+#   <|tool▁call▁begin|>function<|tool▁sep|>name\n{json}<|tool▁call▁end|>
+#   <|tool▁calls▁begin|> … several calls … <|tool▁calls▁end|>
+#   (and the same with ASCII bars, single/double bars, missing "function",
+#    missing closing tokens — a DOM extraction loses the last one).
+#
+# The single-call regex below only knew the first form; a model that answers
+# with SEVERAL calls (an agent reading three files) wrote the block form, which
+# was not parsed at all: the raw markup went back to the agent as text, which
+# is exactly "the model does not respect the tool format".
+_DSV3_TOKEN_RE = re.compile(
+    rf"<\s*/?\s*{_BAR}\s*tool[▁_ ](?:calls[▁_ ](?:begin|end)|call[▁_ ](?:begin|end)|sep)[^<>]*{_BAR}\s*>",
+    re.I,
+)
+_DSV3_END_RE = re.compile(
+    rf"<\s*/?\s*{_BAR}\s*tool[▁_ ](?:calls|call)[▁_ ]end", re.I
+)
+_DSV3_BLOCK_OR_CALL_RE = re.compile(
+    rf"<\s*{_BAR}\s*tool[▁_ ]calls[▁_ ]begin[^<>]*{_BAR}\s*>"
+    rf"([\s\S]*?)(?:<\s*{_BAR}\s*tool[▁_ ]calls[▁_ ]end[^<>]*{_BAR}\s*>|\Z)"
+    rf"|<\s*{_BAR}\s*tool[▁_ ]call[▁_ ]begin[^<>]*{_BAR}\s*>"
+    rf"([\s\S]*?)(?:<\s*{_BAR}\s*tool[▁_ ]call[▁_ ]end[^<>]*{_BAR}\s*>|\Z)",
+    re.I,
+)
+
+
+def _dsv3_calls(
+    block: str, names: Optional[List[str]] = None
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """One block of the V3 dialect → [(tool name, arguments)].
+
+    Once the special tokens are removed the block is a sequence of lines:
+    ``function``, the tool name, then its JSON arguments (possibly on several
+    lines). Reading it as a line stream is what makes the multi-call form and
+    the truncated form work — a regex over the whole block only knew the
+    single, complete, well-ordered case.
+
+    ``names`` is the tool list of the request: an unterminated block has no
+    delimiter before the following prose, so a known name is the only way to
+    tell a call from the sentence the model wrote after it.
+    """
+    known = {n.strip().lower() for n in (names or []) if n and n.strip()}
+    body = _DSV3_TOKEN_RE.sub("\n", block)
+    lines = [line.strip() for line in body.split("\n") if line.strip()]
+    # a markdown fence carries no information here (the model wraps the JSON in
+    # a ```json block, out of habit): dropping those lines leaves exactly
+    # "name" then "arguments"
+    lines = [line for line in lines if not re.fullmatch(r"`{3,}\s*(?:json|json5)?|~{3,}\s*(?:json|json5)?", line, re.I)]
+    out: List[Tuple[str, Dict[str, Any]]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.lower() == "function":
+            i += 1
+            continue
+        m = re.match(r"([A-Za-z0-9_.:+\-]+)\s*([\s\S]*)", line)
+        if not m:
+            i += 1
+            continue
+        name, rest = m.group(1), m.group(2).strip()
+        # prose is not a call: the name must be a known tool (when the request
+        # gave a list) and what follows must be JSON, not a sentence
+        if known and name.lower() not in known:
+            i += 1
+            continue
+        if rest and rest[0] not in "{[":
+            i += 1
+            continue
+        if rest:
+            i += 1
+        elif i + 1 < len(lines) and lines[i + 1][:1] in "{[":
+            rest = lines[i + 1]
+            i += 2
+        else:
+            i += 1
+            out.append((name, {}))
+            continue
+        # arguments spread over several lines: accumulate until the braces close
+        depth = rest.count("{") + rest.count("[") - rest.count("}") - rest.count("]")
+        while depth > 0 and i < len(lines):
+            rest += "\n" + lines[i]
+            depth += lines[i].count("{") + lines[i].count("[") - lines[i].count("}") - lines[i].count("]")
+            i += 1
+        # the arguments are often wrapped in a markdown fence (the model copies
+        # the "JSON in a code block" habit of the contract)
+        rest = re.sub(r"(?s)^\s*(?:`{3,}|~{3,})[ \t]*(?:json|json5)?[ \t]*\n?", "", rest)
+        rest = re.sub(r"(?s)\n?[ \t]*(?:`{3,}|~{3,})[ \t]*\s*$", "", rest)
+        try:
+            args = _args_to_dict(rest) if rest else {}
+        except ValueError:
+            args = {}
+        out.append((name, args))
+    return out
+
+
 _DSV3_CALL_RE = re.compile(
     rf"<\s*{_BAR}\s*tool[▁_ ]call[▁_ ]begin\s*{_BAR}\s*>\s*(?:function)?\s*"
     rf"<\s*{_BAR}\s*tool[▁_ ]sep\s*{_BAR}\s*>\s*([A-Za-z0-9_.:-]+)\s*([\s\S]*?)"
@@ -882,6 +982,22 @@ def parse_tool_calls(
     for m in _DSML_INVOKE_RE.finditer(text):  # invokes written without the block
         if not taken(m.start()):
             add(m.start(), m.end(), _dsml_calls(m.group(0)))
+    for m in _DSV3_BLOCK_OR_CALL_RE.finditer(text):
+        if taken(m.start()):
+            continue
+        calls = _dsv3_calls(m.group(0), requested_names)
+        if not calls:
+            continue
+        end = m.end()
+        seg = m.group(0)
+        if not _DSV3_END_RE.search(seg):
+            # an unclosed block: the match ran to the end of the answer. Cut it
+            # after the last argument, so the prose written after it survives.
+            last = max(seg.rfind("}"), seg.rfind("]"))
+            if last > 0:
+                tail = re.match(r"(?s)[ \t]*(?:`{3,}|~{3,})?[ \t]*", seg[last + 1:])
+                end = m.start() + last + 1 + (tail.end() if tail else 0)
+        add(m.start(), end, calls)
     for m in _DSV3_CALL_RE.finditer(text):
         if not taken(m.start()):
             add(m.start(), m.end(), _calls_from_inner(m.group(2), m.group(1)))

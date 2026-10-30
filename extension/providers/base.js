@@ -349,6 +349,99 @@
   }
 
   /**
+   * Last-resort composer discovery.
+   *
+   * Selectors age: a site renames one class and the composer becomes
+   * invisible to every list of candidates — the prompt is then "written" into
+   * nothing, or the send control is never found, and the caller loops. This
+   * finds the editable surface the page is actually using: the biggest visible
+   * textarea / contenteditable, preferring the one an input event would reach
+   * (bottom of the viewport, near a button).
+   *
+   * It only runs when the specific selectors found nothing.
+   */
+  function discoverEditable() {
+    const nodes = [];
+    const push = (root) => {
+      try {
+        root
+          .querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")
+          .forEach((el) => nodes.push(el));
+      } catch (_) {}
+    };
+    push(document);
+    for (const root of openShadowRoots()) push(root);
+    const vh = (window.innerHeight || 800);
+    let best = null;
+    let bestScore = -1;
+    for (const el of nodes) {
+      if (!isVisible(el)) continue;
+      if (el.disabled || el.readOnly) continue;
+      if (el.getAttribute && el.getAttribute("contenteditable") === "false") continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (!r || r.width < 80 || r.height < 10) continue;
+      // prefer: large, low on the screen, editable text
+      const score =
+        Math.min(r.width, 1200) / 10 +
+        Math.min(r.height, 300) / 5 +
+        (r.top > vh * 0.4 ? 60 : 0) +
+        (el.tagName === "TEXTAREA" ? 20 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Last-resort send control, anchored on the composer we wrote into.
+   *
+   * A send control is a small clickable element right of / below the composer.
+   * Everything that is obviously something else (stop, attach, upload, mic,
+   * model picker, toolkit) is refused by its label.
+   */
+  function discoverSend(near) {
+    const root = near ? findComposerRoot(near) : document.body;
+    const scope = root && root.querySelectorAll ? root : document;
+    const base = near && near.getBoundingClientRect ? near.getBoundingClientRect() : null;
+    const BAD = /stop|cancel|attach|upload|file|mic|voice|audio|toolkit|model|setting|menu|close|delete|clear|copy|retry|regenerat|scroll|download|share|like|dislike|feedback|speak|search|web|deep|think|reason/i;
+    const GOOD = /send|submit|发送|送信|enviar|envoyer/i;
+    let best = null;
+    let bestScore = -1;
+    const nodes = [];
+    try {
+      scope.querySelectorAll("button, [role='button'], [type='submit']").forEach((el) => nodes.push(el));
+    } catch (_) {}
+    for (const el of nodes) {
+      if (!isVisible(el)) continue;
+      const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.id || ""} ${
+        typeof el.className === "string" ? el.className : ""
+      } ${el.getAttribute("data-testid") || ""}`;
+      if (BAD.test(label)) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (!r || r.width < 12 || r.height < 12) continue;
+      let score = 0;
+      if (GOOD.test(label)) score += 100;
+      if (base) {
+        // right of the composer, on the composer's line
+        const dx = r.left - base.right;
+        const dy = Math.abs(r.top + r.height / 2 - (base.top + base.height / 2));
+        if (dx > -base.width * 0.6 && dx < 320) score += 20;
+        if (dy < Math.max(80, base.height)) score += 25;
+      }
+      // a send control is small (an arrow) and often round
+      if (r.width <= 64 && r.height <= 64) score += 10;
+      if (/^button$/i.test(el.tagName)) score += 5;
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return bestScore >= 20 ? best : null;
+  }
+
+  /**
    * Value React currently holds for a controlled field (the composer textarea).
    *
    * The DOM value is NOT enough: React keeps its own state and rewrites the
@@ -1400,39 +1493,73 @@
     const want = String(text ?? "").trim();
     const cands =
       (typeof inputCandidates === "function" ? inputCandidates() : inputCandidates) || [];
-    if (!cands.length) return null;
+    if (!cands.length) {
+      if (log) log("no editable composer found at all");
+      return null;
+    }
+    // A 100 KB prompt needs the tolerant comparison, a short one the exact
+    // check (a leftover draft must never be sent).
+    const same = want.length > 4000 ? composerMatches : textMatches;
+    const holds = (el) => {
+      try {
+        return !!want && same(editorText(el), want);
+      } catch (_) {
+        return false;
+      }
+    };
     for (const el of cands.slice(0, 3)) {
       // a disabled surface (an upload in progress) is postponed, not dropped
       if (!(await waitEditable(el, 6000))) continue;
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        const written = await writeAndConfirm(() => el, text, { attempts: 2, log });
+
+      // Write ONCE. The old loop rewrote the whole prompt on every attempt,
+      // which is what the user saw as "the message is pasted again and again
+      // and never sent": the send control was never found, and each retry
+      // wiped and retyped the composer.
+      if (!holds(el)) {
+        const written = await writeAndConfirm(() => el, text, { attempts: 1, log });
         if (!written) {
-          await sleep(200);
-          continue;
+          if (log) log("this surface did not take the text → trying the next one");
+          continue; // the next attempt clears the surface itself
         }
+      }
+
+      let lastBtn = null;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
         const btn = await waitForEnabledSend(
-          () => (findSend ? findSend(written) : null),
-          sendTimeout,
+          () => (findSend ? findSend(el) : null),
+          attempt === 1 ? sendTimeout : 2500,
           sendDisabledCheck
         );
-        if (
+        lastBtn = btn;
+        const usable =
           btn &&
           !isDisabled(btn) &&
           isVisible(btn) &&
-          (!sendDisabledCheck || !sendDisabledCheck(btn))
-        ) {
-          // the app took it — make sure it is not wiped a moment later
+          (!sendDisabledCheck || !sendDisabledCheck(btn));
+        if (usable) {
           await sleep(settleMs);
-          if (!textMatches(editorText(written), want)) {
-            if (log) log(`send attempt ${attempt}: the text was wiped, retrying`);
-            continue;
-          }
-          return { input: written, btn };
+          if (holds(el)) return { input: el, btn };
+          if (log) log("the text was wiped while the send control was awaited");
+          break; // the app cleared it: write it again, once
         }
-        if (log) log(`send attempt ${attempt}: the send control stayed disabled`);
-        await sleep(200);
+        // No usable control: several apps (Kimi) accept Enter, and the button
+        // only appears once the page has re-rendered — press Enter and see.
+        if (log) {
+          log(
+            `no usable send control (attempt ${attempt}, found=${btn ? "yes" : "no"}) ` +
+              "→ trying Enter"
+          );
+        }
+        pressEnter(el);
+        await sleep(settleMs);
+        if (!holds(el)) return { input: el, btn: null }; // the app took it
       }
-      // this surface does not take the text: clear it and try the next one
+      if (log) {
+        log(
+          "the send control stayed unusable — clearing this surface and trying the next one " +
+            `(found=${lastBtn ? lastBtn.tagName + "." + (lastBtn.className || "") : "none"})`
+        );
+      }
       try {
         if (isContentEditable(el)) el.textContent = "";
         else clearNativeValue(el);
@@ -3114,6 +3241,8 @@
     scoreMessageCopyButton,
     composerMatches,
     composerReport,
+    discoverEditable,
+    discoverSend,
     normalizeComposer,
     compactComposer,
   };

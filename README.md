@@ -1,10 +1,16 @@
-# NemApi v5.6.2
+# NemApi v5.6.3
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+## v5.6.3 — Kimi ne colle plus la requête en boucle, et DeepSeek obéit au format d'outils
+
+- ✅ **« la requête se colle en boucle dans la barre de saisie sans jamais partir »** (Kimi, Z.ai) : `sendWithProof` réécrivait tout le prompt **à chaque tentative sur chaque compositeur** dès que le bouton d'envoi n'était pas retrouvé, et ne savait que cliquer — jamais appuyer sur Entrée. Le prompt est maintenant écrit **une seule fois**, le bouton d'envoi est cherché dans les sélecteurs connus puis **découvert** (petit élément cliquable au bas du compositeur), **Entrée** sert de secours, et l'échec est rapporté en une passe au lieu de boucler. Les sélecteurs de Kimi et Z.ai acceptent aussi les compositeurs qu'ils ne nommaient pas encore. DeepSeek n'est pas touché
+- ✅ **DeepSeek ne respecte pas le format d'appel d'outils et renvoie son DSML** : son dialecte natif à **plusieurs appels** (`<｜tool▁calls▁begin｜>…`, tokens internes `call_begin`/`call_end`, bloc non fermé, arguments JSON sur plusieurs lignes) n'était pas reconnu du tout — le balisage brut repartait dans la conversation comme du texte. Un analyseur ligne à ligne le décode maintenant (2, 3 appels : tous convertis), et le prompt d'outils **interdit explicitement** les syntaxes qui ne sont pas exécutées (`｜DSML｜`, `｜tool▁call▁begin｜`, `<function_calls>`, `<invoke>`, bloc JSON nu)
+- ✅ **Journal** : une réponse qui revient encore en dialecte natif non convertible déclenche un avertissement nommant le dialecte, au lieu d'échouer en silence
 
 ## v5.6.2 — Un très gros prompt n'est plus effacé et retapé en boucle
 
