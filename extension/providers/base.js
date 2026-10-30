@@ -5,7 +5,7 @@
   "use strict";
 
   /* ------------------------------------------------------------------ */
-  /* Timers — the hidden-tab problem (v5.4.1, minimal version)            */
+  /* Timers — the hidden-tab problem (v5.5.0, minimal version)            */
   /* ------------------------------------------------------------------ */
 
   /**

@@ -1,4 +1,4 @@
-# NemApi v5.4.2
+# NemApi v5.5.0
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
@@ -6,14 +6,23 @@
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
 
-**Correctifs v5.4.2 — la latence entre deux requêtes et le premier envoi d'un agent :**
-- ✅ **Plus de trou de 20 s** entre deux requêtes : l'événement de réveil du long-poll est vidé avant l'inspection des files, et un résultat réveille la boucle de poll immédiatement (au lieu d'attendre l'alarme de 30 s)
-- ✅ **Le premier envoi de Qwen Code (95 KB)** : l'échelle de tentatives d'écriture passe de 8 × 3 compositeurs à 3, un gros prompt est écrit **en une fois**, l'attente d'upload ne tourne que s'il y a un fichier, et la détection de démarrage compare deux mesures comparables — avec 90 s de fenêtre pour un site qui préremplit un gros contexte
-- ✅ **Une ligne `Timing` par requête** dans le journal (envoi / démarrage / génération) : une requête lente est attribuable d'un coup d'œil
+## v5.5.0 — la version stable
 
-**Correctifs v5.4.1 — l'onglet en arrière-plan :**
-- ✅ **La requête qui « se débloque » quand on regarde l'onglet** : Chrome étouffe les timers d'un onglet caché (1 s, puis **1 par minute** après cinq minutes) et peut **geler** un onglet silencieux. Les attentes passent désormais par les timers d'un **Worker dédié** (non étouffés), avec repli `MessageChannel`, et l'onglet tient un **Web Lock** (l'opt-out de gel documenté). Un onglet **visible** garde son timer ordinaire : rien ne change pour le cas courant
-- ✅ **Aucune autre logique n'a bougé** : détection de fin de réponse, extraction, envoi, contexte incrémental et intégrations sont ceux de la v5.3.1. La v5.4.0, qui réécrivait ces chemins, a été **annulée** (voir `FIXES.md` §14)
+Une seule idée : **garder la logique d'envoi, de détection et d'extraction de la
+v5.3.1**, qui fonctionne, et ne corriger que ce qui la ralentissait ou la
+bloquait. La réécriture de la v5.4.0 a été **annulée** (voir `FIXES.md` §14) :
+elle rendait l'onglet du fournisseur muet en pleine requête.
+
+**Corrigé dans cette version :**
+
+- ✅ **Onglet en arrière-plan** — la requête ne « se débloque » plus quand on regarde l'onglet. Chrome étouffe les timers d'une page cachée (1 s, puis **1 par minute**) et peut la **geler** : les attentes passent par un **Worker dédié** (non étouffé) avec repli `MessageChannel`, l'onglet tient un **Web Lock**, et les onglets pilotés sont exclus de la mise en veille mémoire. Un onglet **visible** garde son timer ordinaire : le cas courant ne change pas du tout
+- ✅ **Plus de trou de 20 s entre deux requêtes** — l'événement de réveil du long-poll est vidé **avant** l'inspection des files, et un résultat réveille la boucle de poll immédiatement au lieu d'attendre l'alarme de 30 s
+- ✅ **Le premier envoi d'un agent (95 KB)** — l'échelle de tentatives d'écriture passe de 8 × 3 compositeurs à 3, un prompt de plus de 8 000 caractères est écrit **en une fois**, l'attente d'upload ne tourne que s'il y a un fichier, et la détection de démarrage compare **deux mesures comparables** (avant : une signature comparée au markdown de la réponse précédente) avec 90 s de fenêtre pour un site qui préremplit un gros contexte
+- ✅ **Plus de `Tab is already running another job`** — un routeur périmé laissé dans un onglet par un rechargement d'extension est remplacé automatiquement par la nouvelle version, sans F5
+- ✅ **Une ligne `Timing` par requête** dans le journal (`typed` / `start` / `answer`) : une requête lente est attribuable d'un coup d'œil
+
+**Mise à jour :** recharger l'extension dans `chrome://extensions`, puis
+redémarrer le proxy. Le premier job remplace seul le routeur de l'onglet.
 
 **Correctifs v5.3.1 :**
 - ✅ **La discussion web ne se rouvre plus à chaque requête** : la persistance devient le défaut pour **tous** les clients (le « Chat test » de l'interface comprise). Le mode classique ne rafraîchit plus l'URL ; seul le réglage explicite « Nouvelle discussion à chaque requête » peut le réactiver

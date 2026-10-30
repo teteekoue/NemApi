@@ -702,7 +702,7 @@
     //    Only when this message really carries a file: the check scans the
     //    whole page for previews and spinners, and a site that always shows a
     //    spinner made it wait its full timeout on EVERY send (90 s before
-    //    v5.4.2) — with nothing to upload.
+    //    v5.5.0) — with nothing to upload.
     if (pendingUploads) {
       try {
         await waitUploadSettled({ timeout: 20000 });

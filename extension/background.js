@@ -120,7 +120,7 @@ async function listAiTabs() {
 }
 
 /**
- * Keep the provider tabs out of Chrome's memory saver (v5.4.1).
+ * Keep the provider tabs out of Chrome's memory saver (v5.5.0).
  *
  * A discarded tab is unloaded: its content script is gone and the job that was
  * running there is lost, which is one way a request "only finishes when the

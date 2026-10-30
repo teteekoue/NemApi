@@ -627,7 +627,7 @@ récupération du job, la première requête aboutit du premier coup.
 
 Résultat : **268 tests passent, 0 échec, 0 ignoré**.
 
-## 14. v5.4.1 — L'onglet en arrière-plan : les timers, et rien d'autre (2026-10-30)
+## 14. L'onglet en arrière-plan : les timers, et rien d'autre (v5.5.0)
 
 ### Ce qui était cassé
 
@@ -688,7 +688,7 @@ timer brut ne subsiste dans `content.js`, et que les sept fournisseurs n'ont
 pas bougé. Ses tests de comportement demandent Chromium (comme les autres
 tests DOM du projet).
 
-## 15. v5.4.2 — Les 20 secondes perdues entre deux requêtes, et le premier envoi d'un agent (2026-10-30)
+## 15. Les 20 secondes perdues entre deux requêtes, et le premier envoi d'un agent (v5.5.0)
 
 Mesuré sur un journal réel (DeepSeek, deux clients) :
 
@@ -757,3 +757,44 @@ d'œil, sans campagne de logs.
 
 Résultat : **216 tests passent, 0 échec** (4 contrôles statiques ajoutés à
 `tests/test_extension_timers.py`).
+
+## 16. v5.5.0 — Version stable (2026-10-30)
+
+v5.4.1 et v5.4.2 ont été livrées, testées sur un vrai fournisseur (DeepSeek,
+deux clients : NEMESIS et Qwen Code) et **retenues** : plus de lenteur
+anormale, plus d'onglet figé, plus de job corrompu. Elles deviennent **5.5.0**,
+la version stable, dont le contenu est :
+
+1. **Onglet en arrière-plan** (§14) — timers d'un Worker dédié, repli
+   `MessageChannel`, Web Lock, onglets pilotés hors mise en veille mémoire.
+2. **Latence et premier envoi** (§15) — réveil du long-poll, écriture d'un gros
+   prompt en une fois, échelle d'envoi réduite, détection de démarrage
+   comparable, ligne `Timing`, remplacement d'un routeur périmé.
+
+### Ce que 5.5.0 ne fait pas
+
+Elle ne touche **pas** à la logique de la v5.3.1 : `content.js` (hors attentes,
+démarrage et télémétrie), `background.js` (hors réveil du poll, protection des
+onglets et réveil du service worker), `base.js` (hors timers et écriture des
+très gros prompts) et les sept `providers/*.js` (hors échelle d'envoi de
+DeepSeek) sont inchangés. C'est la leçon de la v5.4.0 : une réécriture large du
+trajet d'un job ne se valide pas sur une journée, et casse ce qui marchait.
+
+### Vérifications
+
+- `cd proxy && .venv/bin/python -m pytest -q` → **216 passés, 65 ignorés**
+  (les tests Playwright restent ignorés faute de Chromium dans cet
+  environnement ; ils se lancent chez l'utilisateur).
+- `node --check` sur les onze fichiers JavaScript de l'extension.
+- Harnais jsdom : job complet, deux jobs consécutifs sur le même onglet,
+  rotation Worker → `MessageChannel` → timer, page refusant le Worker (CSP),
+  préremplissage lent, message gardé par le compositeur.
+- Relevé sur le journal de l'utilisateur : latence entre deux requêtes passée
+  de ~22 s à moins d'une seconde, et premier envoi de Qwen Code (95 KB) qui
+  aboutit au lieu d'échouer après 160 s.
+
+### Mise à jour depuis une 5.4.x
+
+Recharger l'extension (`chrome://extensions`), redémarrer le proxy. Le premier
+job remplace seul le routeur de l'onglet : la version de `content.js` est
+publiée dans la page, un routeur plus ancien ne se défend plus.

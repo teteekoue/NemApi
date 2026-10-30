@@ -1,4 +1,4 @@
-"""The hidden-tab timers of the extension (v5.4.1).
+"""The hidden-tab timers and the send path of the extension (v5.5.0).
 
 Chrome throttles a hidden page's chained timers: one wake per second, then —
 after five minutes hidden, once the timer chain reaches 5 (every polling loop
@@ -8,7 +8,7 @@ finished "instantly" when the tab came back to the foreground. Chrome can also
 FREEZE a hidden, silent tab (Energy Saver): nothing runs at all until the tab
 is activated.
 
-v5.4.1 changes the TIMER SOURCE only — the wait loops, the detection and the
+v5.5.0 changes the TIMER SOURCE only — the wait loops, the detection and the
 extraction are the ones of v5.3.1:
 
 * `providers/ticker.js`, a dedicated Worker, owns the timers of a hidden tab
@@ -38,6 +38,17 @@ playwright = pytest.importorskip("playwright.sync_api")
 
 
 # --------------------------------------------------------------- static checks
+def test_the_version_is_the_same_everywhere():
+    """proxy, manifest and the tab router must never drift apart."""
+    import re
+
+    import nemapi
+
+    manifest = json.loads((EXT / "manifest.json").read_text())["version"]
+    router = re.search(r'CS_VERSION = "([^"]+)"', (EXT / "content.js").read_text()).group(1)
+    assert manifest == nemapi.__version__ == router
+
+
 def test_ticker_worker_is_web_accessible():
     """`new Worker(chrome.runtime.getURL(...))` needs the file declared."""
     manifest = json.loads((EXT / "manifest.json").read_text())
@@ -80,7 +91,7 @@ def test_background_protects_the_provider_tabs_from_the_memory_saver():
 
 
 def test_the_providers_are_untouched_by_this_release():
-    """v5.4.1 is a timer fix: no extraction/detection logic may change."""
+    """The timer/send repair must not touch the providers' extraction logic."""
     for name in PROVIDER_FILES:
         source = (PROVIDERS / f"{name}.js").read_text()
         # the detection of v5.3.1, unchanged
