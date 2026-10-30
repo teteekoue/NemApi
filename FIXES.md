@@ -798,3 +798,95 @@ trajet d'un job ne se valide pas sur une journée, et casse ce qui marchait.
 Recharger l'extension (`chrome://extensions`), redémarrer le proxy. Le premier
 job remplace seul le routeur de l'onglet : la version de `content.js` est
 publiée dans la page, un routeur plus ancien ne se défend plus.
+
+## 17. v5.6.0 — MonkeyCode : le protocole, le chemin, et le silence de Cloudflare (2026-10-30)
+
+### Le symptôme
+
+MonkeyCode (SaaS, agent de code en nuage, `chaitin/MonkeyCode` + son agent
+`OhMyAgent`) était configuré en fournisseur personnalisé « OpenAI natif »
+pointant sur un tunnel Cloudflare de NemApi. Le test de connexion et les
+requêtes échouaient sur un **format d'appel incompatible**.
+
+### Ce que le code de MonkeyCode fait réellement
+
+Lu dans le dépôt, pas deviné :
+
+- `backend/biz/llmproxy/proxy.go` — l'agent appelle le proxy de MonkeyCode sur
+  `/v1/chat/completions`, `/v1/responses` ou `/v1/messages`, et le proxy
+  réécrit vers **`<base_url>/chat/completions`** (ou `/responses`,
+  `/messages`) avec `filepath.Join`. Il ajoute `Authorization: Bearer <clé>`
+  et `X-Api-Key: <clé>`.
+- `backend/pkg/llm/check.go` — le test de connexion poste
+  `baseURL + "/chat/completions"` avec `{"model", "messages":[…"hi"], "max_tokens": 1}`
+  (ou `baseURL + "/responses"` avec `{"model", "input": […]}`).
+- `frontend/.../add-model.tsx` — l'URL affichée à l'utilisateur est
+  `baseUrl + "chat/completions"`, `baseUrl + "responses"` ou `baseUrl + "v1/messages"`.
+- `backend/biz/llmproxy/ohmyagent_prompt.go` — l'agent parle les trois
+  protocoles ; son prompt système commence par
+  « You are OhMyAgent, an AI coding agent for software engineering tasks. »
+
+Trois conclusions, donc :
+
+1. **l'URL de base doit finir par `/v1`**, sinon l'appel tombe sur
+   `/chat/completions` — que NemApi ne servait pas : 404 muet. C'est le cas le
+   plus probable du « format incompatible » ;
+2. choisir « OpenAI Responses » envoie `POST /responses` avec `instructions` +
+   `input` : NemApi n'avait **aucune** API Responses ;
+3. un tunnel Cloudflare coupe une réponse **sans données** au bout de 100 s
+   (erreur 524) : une génération de plusieurs minutes doit streamer.
+
+### Ce qui a été ajouté
+
+**API Responses (`proxy/nemapi/utils/responses_api.py`, `routers/openai.py`)**
+— `POST /v1/responses` et `/responses`, en flux et hors flux :
+
+- entrée : `instructions` → message système, `input` (chaîne, `message`,
+  `function_call`, `function_call_output`, `input_image`) → messages du
+  pipeline, `tools` à plat → tableau `tools` du chat, `tool_choice` transmis ;
+  les items non conversationnels (`reasoning`, `web_search`…) sont ignorés ;
+- sortie hors flux : un objet `response` complet (`output`, `usage`) ;
+- sortie en flux : la séquence attendue par un client Responses
+  (`response.created`, `response.output_item.added`,
+  `response.output_text.delta` découpé, `.done`, `response.completed`), et pour
+  un appel d'outil un item `function_call` avec `call_id`, `name`, `arguments` ;
+- le pipeline entier est réutilisé : file de jobs, extension, intégrations,
+  contexte incrémental, analyse des appels d'outils, keep-alive.
+
+**Chemins sans `/v1`** — les quatre surfaces (`/chat/completions`,
+`/responses`, `/models`, et `/models/{id}`) sont servies avec **et** sans le
+préfixe, pour que n'importe quelle combinaison d'URL saisie par l'utilisateur
+aboutisse.
+
+**Battement de cœur dans les flux Responses** — en-têtes immédiats, puis un
+commentaire SSE (`: keep-alive`) toutes les 15 s : aucun parseur SSE ne le lit,
+et ni Cloudflare ni l'agent ne coupent la connexion.
+
+**Intégration MonkeyCode** (`services/integrations.py`) — même socle que Qwen
+Code : discussion unique, contexte incrémental, appels d'outils, requêtes
+annexes locales, suite des réponses coupées, keep-alive. Reconnue par l'en-tête
+`X-NemApi-Agent: monkey-code`, le `User-Agent` de l'agent, ou le prompt système
+« You are OhMyAgent » (le signal fiable : le prompt part à chaque requête).
+
+### Piège documenté
+
+MonkeyCode déduit le protocole du **nom du modèle** quand l'interface n'est pas
+forcée (`fillInterfaceType`) : un nom contenant `claude` part en
+`/v1/messages` (Anthropic, non servi par NemApi), `codex` en `/responses`.
+La page Intégration et le README le disent : utiliser un nom NemApi sans ces
+mots (`deepseek-chat`, `qwen-chat`, `gemini-chat`, `glm-chat`…).
+
+### Vérifications
+
+- `proxy/tests/test_responses_api.py` : conversion entrée/sortie, séquence
+  d'événements, item `function_call`, endpoints avec et sans `/v1`, test de
+  connexion de MonkeyCode.
+- `proxy/tests/test_monkeycode_integration.py` : reconnaissance par le prompt
+  système, **contexte incrémental** (le 2ᵉ tour ne retape pas l'historique),
+  appel d'outil en réponse simple et en flux, intégration désactivée = mode
+  classique, et — la preuve qui compte — **le SDK OpenAI officiel** (v3.41)
+  lit notre flux Responses avec ses propres parseurs (`client.responses.create`,
+  en flux et hors flux).
+- `proxy/tests/test_responses_api.py` : battement de cœur vérifié sur une
+  réponse plus lente que le seuil (c'est ce que Cloudflare couperait).
+- Suite complète : **221 tests passés, 0 échec**.

@@ -638,3 +638,28 @@ de version cassait le build à chaque fois.
   sur 100 KB. En dessous, il reste le meilleur chemin.
 - `api.github.com` et `grep.app` sont **rate-limités** depuis cette machine ;
   `lite.duckduckgo.com/lite/?q=` et `raw.githubusercontent.com` fonctionnent.
+
+---
+
+## 9. Compatibilité des clients (v5.6.0)
+
+Un client qui échoue dit rarement pourquoi : il rapporte « format
+incompatible ». Avant de conclure à un bug de NemApi, lire **le code du
+client** (le dépôt, pas sa documentation) et vérifier trois choses :
+
+1. **le chemin exact** — un client qui possède une URL de base concatène le
+   chemin lui-même (`baseURL + "chat/completions"`). C'est pourquoi chaque
+   surface est servie **avec et sans** le préfixe `/v1` : `routers/openai.py`
+   monte les mêmes routes sur deux routeurs (`router` et `compat_router`).
+   Toute nouvelle surface doit être montée de la même façon via `_mount()` ;
+2. **le protocole** — chat completions **et** Responses (`utils/responses_api.py`)
+   sont servis. Un client « OpenAI natif » peut envoyer l'un ou l'autre :
+   ne jamais supposer chat completions ;
+3. **l'infrastructure entre les deux** — un tunnel (Cloudflare, ngrok) coupe
+   une réponse sans données (100 s chez Cloudflare, erreur 524). Tout flux de
+   réponse longue doit émettre un battement de cœur : en chat, un chunk
+   `delta.content` vide ; en Responses, un commentaire SSE `: keep-alive`.
+
+Un corps de requête inconnu ne doit **jamais** être rejeté en bloc : le
+pipeline lit ce qu'il connaît et ignore le reste (`_Lenient`, `extra="allow"`).
+Les seuls 400 sont ceux qui rendent la requête ininterprétable.

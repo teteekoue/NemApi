@@ -49,6 +49,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     install_error_handlers(app)
 
     app.include_router(openai.router)
+    app.include_router(openai.compat_router)  # the same endpoints without /v1
     app.include_router(extension.router)
     app.include_router(admin.router)
     app.include_router(api_keys.router)

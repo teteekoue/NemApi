@@ -342,7 +342,8 @@ def format_messages_prompt(
 
     for m in messages:
         role = (m.get("role") or "").lower()
-        if role == "system":
+        # "developer" is the Responses API flavour of the system role
+        if role in ("system", "developer"):
             t = _extract_text(m.get("content")).strip()
             if t:
                 system_parts.append(t)

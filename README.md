@@ -1,10 +1,29 @@
-# NemApi v5.5.0
+# NemApi v5.6.0
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+## v5.6.0 — MonkeyCode : le protocole que l'agent attend, et un chemin qui répond
+
+**Nouvel agent intégré : [MonkeyCode](https://github.com/chaitin/MonkeyCode)** (agent de code
+en nuage, chaitin/OhMyAgent), avec le même socle que Qwen Code : une seule
+discussion web, contexte incrémental, appels d'outils, requêtes annexes.
+
+Trois incompatibilités réelles, toutes corrigées :
+
+- ✅ **L'API Responses** — `POST /v1/responses` (et `/responses`). L'agent parle le protocole que son
+  modèle déclare : avec « OpenAI Responses » il envoie `instructions` + `input` et attend un flux
+  d'événements `response.*`. NemApi ne répondait que du chat completions → erreur de format côté agent
+- ✅ **Le chemin sans `/v1`** — MonkeyCode ajoute le chemin à l'URL saisie (`baseURL + "chat/completions"`,
+  et son test de connexion `baseURL + "/chat/completions"`). Sans `/v1` dans l'URL, les deux tombaient sur
+  un 404 muet. Les quatre surfaces (`/chat/completions`, `/responses`, `/models`, avec et sans `/v1`) sont
+  désormais servies
+- ✅ **Le silence de Cloudflare** — un tunnel `trycloudflare.com` coupe une réponse sans données après
+  100 s (erreur 524). En streaming, les en-têtes partent immédiatement puis un battement de cœur toutes
+  les 15 s, pour `/responses` aussi
 
 ## v5.5.0 — la version stable
 
@@ -308,6 +327,47 @@ Ou via `~/.qwen/settings.json` :
   "model": { "name": "nemapi-qwen" }
 }
 ```
+
+### MonkeyCode (agent de code en nuage)
+
+MonkeyCode tourne chez son éditeur : il faut donc lui donner une adresse
+publique vers ta machine. Un tunnel rapide suffit, et NemApi accepte les deux
+protocoles OpenAI.
+
+```bash
+# 1) NemApi, en écoute réseau
+python3 run.py                       # http://0.0.0.0:8090
+
+# 2) Un tunnel public (aucun compte, l'URL change à chaque lancement)
+cloudflared tunnel --url http://127.0.0.1:8090
+#   → https://<mots-aleatoires>.trycloudflare.com
+```
+
+```text
+# 3) MonkeyCode → Console → Modèles → « Lier »
+Interface       : OpenAI Chat          (ou OpenAI Responses, les deux marchent)
+URL de base     : https://<tunnel>.trycloudflare.com/v1
+Clé API         : ta clé NemApi        (laisser vide si la protection est désactivée)
+Modèle          : deepseek-chat        (ou qwen-chat, gemini-chat, glm-chat…)
+```
+
+Puis, dans NemApi, **Intégration agents IA → MonkeyCode → activer**.
+
+Ce qu'il faut savoir :
+
+| Point | Pourquoi |
+|---|---|
+| L'URL **avec** `/v1` ou **sans** | NemApi sert les deux. Sans `/v1`, MonkeyCode appelait `/chat/completions`, qui n'existait pas |
+| « OpenAI Chat » **ou** « OpenAI Responses » | les deux protocoles sont servis ; « OpenAI Responses » utilise `POST /v1/responses` |
+| Éviter un modèle dont le nom contient `claude` ou `codex` | MonkeyCode en déduit le protocole Anthropic / Responses. `claude-chat` partirait en `/v1/messages`, que NemApi ne sert pas encore : prends `deepseek-chat`, `qwen-chat`, `gemini-chat` |
+| Garder le tunnel **ouvert** | le proxy de MonkeyCode doit joindre ta machine à chaque tour ; un tunnel fermé = erreur de connexion côté agent |
+| Streaming recommandé | une réponse sans données pendant 100 s est coupée par Cloudflare (524). En streaming, NemApi envoie les en-têtes tout de suite puis un battement de cœur |
+| Le test de connexion de MonkeyCode tape un vrai « hi » | il passe par ton onglet et prend quelques secondes : c'est normal, ce n'est pas un blocage |
+
+Reconnaissance de l'agent : en-tête `X-NemApi-Agent: monkey-code` (si ton
+tunnel laisse passer les en-têtes), `User-Agent` de l'agent, ou — le plus
+souvent — le prompt système « You are OhMyAgent », qui est envoyé à chaque
+requête.
 
 ### Intégration agents IA (v5) 🆕
 
