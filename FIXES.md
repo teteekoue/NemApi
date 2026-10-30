@@ -890,3 +890,67 @@ mots (`deepseek-chat`, `qwen-chat`, `gemini-chat`, `glm-chat`…).
 - `proxy/tests/test_responses_api.py` : battement de cœur vérifié sur une
   réponse plus lente que le seuil (c'est ce que Cloudflare couperait).
 - Suite complète : **221 tests passés, 0 échec**.
+
+## 18. v5.6.1 — Le test de connexion de MonkeyCode refusait la configuration (2026-10-30)
+
+### Le symptôme
+
+Après avoir saisi l'URL Cloudflare dans MonkeyCode et lancé le test de
+connexion (« hi ») :
+
+```
+Model configuration check failed: parsed response:
+Invalid character 'd' looking for beginning of value
+```
+
+La configuration ne s'enregistre pas.
+
+### Ce que dit le message
+
+`Invalid character 'd' …` est une erreur du **décodeur JSON de Go**
+(`encoding/json`), pas de NemApi : le corps de la réponse n'est pas du JSON et
+commence par `d` — c'est-à-dire `data: `, le préfixe d'un flux SSE.
+
+Le test de connexion de MonkeyCode (`backend/pkg/llm/check.go`) poste
+
+```json
+{"model": "…", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+```
+
+avec seulement `Content-Type` et `Authorization` : **ni `stream`, ni
+`Accept`**. Or `services/completions.py` appliquait le réglage « Streaming »
+(activé par défaut) à tout client qui ne précisait rien : NemApi répondait un
+flux SSE à un client qui attendait un objet JSON. Son `json.Unmarshal` échoue
+sur le `d` de `data: ` et il refuse d'enregistrer le modèle.
+
+C'est une violation du contrat OpenAI, et elle touchait n'importe quel client
+exigeant du JSON, pas seulement MonkeyCode.
+
+### Le correctif
+
+`stream` est décidé par le **client**, et par lui seul :
+
+| Requête | Réponse |
+|---|---|
+| `stream: true` dans le corps | SSE |
+| `Accept: text/event-stream` | SSE |
+| tout le reste (y compris sans `stream` ni `Accept`) | **JSON** |
+
+Le réglage « Streaming » de la page Configuration devient ce qu'il aurait dû
+être : une **autorisation**. Désactivé, un client qui demande un flux reçoit un
+400 `streaming_disabled` avec un message explicite — jamais une réponse d'un
+autre type que celui demandé (c'était le défaut symétrique : « Streaming
+request received a non-SSE response » côté Qwen Code).
+
+Le libellé de la page Configuration est corrigé en conséquence.
+
+### Vérifications
+
+- `proxy/tests/test_monkeycode_integration.py` rejoue **la requête exacte** de
+  `check.go` sur un proxy aux réglages par défaut, sur les quatre chemins
+  (`/v1/chat/completions`, `/chat/completions`, `/v1/responses`, `/responses`) :
+  statut 200, `Content-Type: application/json`, premier octet `{`.
+- `proxy/tests/test_completions.py` : le client décide du flux (réglage ON ou
+  OFF), une demande de flux reste honorée, et le 400 `streaming_disabled` est
+  vérifié.
+- Suite complète : **223 tests passés, 0 échec**.

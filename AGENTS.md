@@ -412,6 +412,16 @@ du `model`. C'est un invariant : une variable de comportement dans le corps
 lierait chaque client à un dialecte NemApi et casserait le « un protocole
 pour tout le monde ».
 
+**Le flux, c'est le client qui le demande** (`services/completions.py`) :
+`stream: true` dans le corps, ou en-tête `Accept: text/event-stream` → SSE ;
+**sinon JSON**. Aucun réglage du proxy ne force le SSE : un client qui
+n'annonce rien attend du JSON et le décode avec son propre analyseur
+(MonkeyCode : `json.Unmarshal` sur du `data: ` → « Invalid character 'd'
+looking for beginning of value », le modèle ne peut même pas être
+enregistré). Le réglage « Streaming » ne fait qu'**autoriser** le flux :
+désactivé, une demande de flux reçoit un 400 `streaming_disabled` explicite
+plutôt qu'une réponse d'un autre type que celui demandé.
+
 **Qui ouvre une nouvelle discussion ?** Jamais le client. Le proxy décide :
 `fresh_chat` vaut `False` par défaut (persistance de la discussion, pour tous
 les clients) ; une intégration qui n'a ni `persistent_chat` ni

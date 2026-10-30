@@ -105,15 +105,43 @@ async def test_stream_completion_and_accept_header(server):
             assert r.headers["content-type"].startswith("text/event-stream")
 
 
-async def test_stream_default_follows_admin_setting(server):
+async def test_the_client_decides_the_streaming_not_a_proxy_setting(server):
+    """The OpenAI contract, and nothing else.
+
+    A request that does not ask for a stream gets JSON — whatever the admin
+    « Streaming » switch says. Forcing SSE on a client that expects JSON
+    breaks its parser (MonkeyCode's Go health check: "Invalid character 'd'
+    looking for beginning of value", the `d` of `data: `).
+    """
+    async with FakeExtension(server.url):
+        async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
+            for enabled in (False, True):
+                await c.post("/settings", json={"stream_enabled": enabled})
+                r = await c.post(
+                    "/v1/chat/completions",
+                    json={"model": "kimi", "messages": [{"role": "user", "content": f"b{enabled}"}]},
+                )
+                assert r.headers["content-type"].startswith("application/json"), enabled
+                assert r.json()["object"] == "chat.completion"
+            # asking for a stream is still enough
+            r = await c.post(
+                "/v1/chat/completions",
+                json={"model": "kimi", "messages": [{"role": "user", "content": "s"}], "stream": True},
+            )
+            assert r.headers["content-type"].startswith("text/event-stream")
+
+
+async def test_a_stream_can_be_switched_off_with_a_clear_error(server):
     async with FakeExtension(server.url):
         async with httpx.AsyncClient(base_url=server.url, timeout=10) as c:
             await c.post("/settings", json={"stream_enabled": False})
-            r = await c.post("/v1/chat/completions", json={"model": "kimi", "messages": MSG})
-            assert r.headers["content-type"].startswith("application/json")
+            r = await c.post(
+                "/v1/chat/completions",
+                json={"model": "kimi", "messages": [{"role": "user", "content": "s"}], "stream": True},
+            )
+            assert r.status_code == 400
+            assert r.json()["error"]["type"] == "streaming_disabled"
             await c.post("/settings", json={"stream_enabled": True})
-            r = await c.post("/v1/chat/completions", json={"model": "kimi", "messages": [{"role": "user", "content": "b"}]})
-            assert r.headers["content-type"].startswith("text/event-stream")
 
 
 async def test_tool_calls(server):

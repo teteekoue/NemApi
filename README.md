@@ -6,6 +6,10 @@
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
 
+## v5.6.1 — Le test de connexion de MonkeyCode pouvait enfin enregistrer le modèle
+
+- ✅ **`Invalid character 'd' looking for beginning of value`** — le test de connexion de MonkeyCode décode du JSON ; NemApi lui répondait un flux SSE (le réglage « Streaming » s'appliquait aux clients qui ne demandaient rien). Désormais **le client décide** : `stream: true` ou `Accept: text/event-stream` → flux, sinon **JSON**. Le réglage « Streaming » ne fait plus qu'autoriser le flux
+
 ## v5.6.0 — MonkeyCode : le protocole que l'agent attend, et un chemin qui répond
 
 **Nouvel agent intégré : [MonkeyCode](https://github.com/chaitin/MonkeyCode)** (agent de code

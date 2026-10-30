@@ -181,3 +181,50 @@ async def test_the_official_openai_sdk_reads_our_responses_stream(server):
             assert completed.usage.total_tokens > 0
         finally:
             await client.close()
+
+
+async def test_the_monkeycode_health_check_can_save_the_configuration(server):
+    """The exact request of `backend/pkg/llm/check.go`, on a stock proxy.
+
+    Go: `{"model", "messages":[…"hi"], "max_tokens": 1}`, headers Content-Type
+    and Authorization only — no `stream`, no `Accept`. The body is then parsed
+    with `json.Unmarshal`, so an SSE answer fails on the `d` of `data: `:
+    "Invalid character 'd' looking for beginning of value", and the model can
+    never be saved. The admin « Streaming » switch is ON by default, so this is
+    the shipped-configuration case.
+    """
+    async with FakeExtension(server.url):
+        async with httpx.AsyncClient(base_url=server.url, timeout=30) as c:
+            # default settings: stream_enabled is true
+            settings = (await c.get("/status")).json()
+            assert settings["settings"]["stream_enabled"] is True
+
+            for path in ("/v1/chat/completions", "/chat/completions"):
+                r = await c.post(
+                    path,
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 1,
+                    },
+                    headers={"Authorization": "Bearer nemapi", "Content-Type": "application/json"},
+                )
+                assert r.status_code == 200, (path, r.status_code, r.text[:200])
+                # what Go's json.Unmarshal needs: a JSON document, no `data: `
+                assert r.headers["content-type"].startswith("application/json"), (
+                    path,
+                    r.headers["content-type"],
+                )
+                assert r.content[:1] == b"{", r.content[:40]
+                body = r.json()
+                assert "error" not in body
+                assert body["object"] == "chat.completion"
+
+            # the Responses flavour of the same check
+            r = await c.post(
+                "/v1/responses",
+                json={"model": "deepseek-chat", "input": [{"role": "user", "content": "hi"}]},
+                headers={"Authorization": "Bearer nemapi", "Content-Type": "application/json"},
+            )
+            assert r.status_code == 200 and r.content[:1] == b"{"
+            assert r.json()["object"] == "response"

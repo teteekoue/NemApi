@@ -101,13 +101,27 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
             if fn.get("name"):
                 tool_names.append(str(fn["name"]))
 
-    # Explicit client flag wins; else the admin toggle. SSE Accept header forces streaming.
-    if "stream" in body.model_fields_set:
-        stream = bool(body.stream)
-    else:
-        stream = ctx.config.get("stream_enabled")
+    # THE CLIENT decides, as the OpenAI contract says:
+    #   stream:true in the body, or `Accept: text/event-stream`  → SSE
+    #   anything else                                            → JSON
+    #
+    # The admin « Streaming » toggle used to force SSE on clients that asked
+    # for nothing. That broke every spec-compliant client whose parser expects
+    # JSON: MonkeyCode's health check (Go, `json.Unmarshal`) fails on the
+    # `d` of `data: ` with "Invalid character 'd' looking for beginning of
+    # value", and a request that would have worked could not even be saved.
+    # The toggle now means "streaming allowed": turned off, a client that asks
+    # for a stream gets a clear 400 instead of a silently non-SSE answer.
+    stream = bool(body.stream) if "stream" in body.model_fields_set else False
     if "text/event-stream" in (headers.get("accept") or "").lower():
         stream = True
+    if stream and not ctx.config.get("stream_enabled"):
+        raise APIError(
+            400,
+            "Streaming is disabled in NemApi (Configuration → Streaming). "
+            "Send `stream: false`, or turn the switch back on.",
+            "streaming_disabled",
+        )
 
     plan = None
     local = None

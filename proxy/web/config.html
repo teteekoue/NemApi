@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NemApi · Configuration</title>
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("nemapi-theme")||"dark"}catch(e){}</script>
-<link rel="stylesheet" href="/admin.css?v=5.6.0">
+<link rel="stylesheet" href="/admin.css?v=5.6.1">
 <link rel="icon" href="/icons/logo-32.png" type="image/png">
 </head>
 <body data-page="config" data-title="Configuration">
@@ -31,7 +31,7 @@
         <div class="card">
           <div class="card-head"><div><h3 id="h-settings">Paramètres</h3><p class="desc">Comportement général du proxy (mode classique).</p></div></div>
           <div class="setting">
-            <div><div class="s-title">Streaming (SSE)</div><div class="s-desc">Réponses en flux pour les clients qui ne précisent pas <code>stream</code>.</div></div>
+            <div><div class="s-title">Streaming (SSE)</div><div class="s-desc">Autorise les réponses en flux. C'est le <b>client</b> qui choisit (<code>stream: true</code> ou en-tête <code>Accept: text/event-stream</code>) ; sans demande, la réponse est du JSON. Désactivé, un client qui demande un flux reçoit une erreur 400 explicite.</div></div>
             <label class="switch"><input type="checkbox" id="cfg-stream"><span class="slider"></span></label>
           </div>
           <div class="setting">
@@ -77,7 +77,7 @@
   </div>
 </div>
 
-<script src="/admin.js?v=5.6.0"></script>
+<script src="/admin.js?v=5.6.1"></script>
 <script>
 "use strict";
 $("h-tabs").insertAdjacentHTML("afterbegin", icon("tabs"));
