@@ -119,6 +119,25 @@ async function listAiTabs() {
     .filter((tab) => tab.provider);
 }
 
+/**
+ * Keep the provider tabs out of Chrome's memory saver (v5.5.0).
+ *
+ * A discarded tab is unloaded: its content script is gone and the job that was
+ * running there is lost, which is one way a request "only finishes when the
+ * tab is opened again". Only the tabs we are actually driving are touched, and
+ * each one only once.
+ */
+const protectedTabs = new Set();
+async function protectTabs() {
+  for (const tabId of Object.values(targetTabs || {})) {
+    if (!Number.isInteger(tabId) || protectedTabs.has(tabId)) continue;
+    protectedTabs.add(tabId);
+    try {
+      await chrome.tabs.update(tabId, { autoDiscardable: false });
+    } catch (_) {}
+  }
+}
+
 async function reportTabs() {
   try {
     await fetch(PROXY + "/extension/tabs", {
@@ -298,6 +317,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       postResult(msg.jobId, "result", msg.result, undefined, { source: msg.source, bridge: msg.bridge, partial: msg.partial });
       extensionLog(`Job ${msg.jobId} completed on ${provider}`);
     }
+    // The worker is awake right now: fetch the next queued job at once
+    // instead of waiting for the alarm (up to 30 s of dead time between two
+    // requests — the gap seen in the log between "OK" and "Starting job").
+    if (!pollInFlight) schedule(0);
     sendResponse({ ok: true });
     return true;
   }
@@ -310,6 +333,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       postResult(msg.jobId, "error", msg.error, msg.typed);
       extensionLog(`Job ${msg.jobId} failed on ${provider || "?"}: ${msg.error}`, "error");
     }
+    if (!pollInFlight) schedule(0);
     sendResponse({ ok: true });
     return true;
   }
@@ -444,7 +468,9 @@ async function doPoll() {
     // always failed).
     await reportTabs();
     await pullConfig();
-    
+    // best effort, never awaited before the job fetch
+    protectTabs().catch(() => {});
+
     // Watchdog: libère les jobs bloqués (le proxy abandonne après jobTimeoutMs, donc tout
     // job plus vieux que JOB_WATCHDOG_MS est forcément mort côté proxy).
     try {

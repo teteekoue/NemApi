@@ -208,6 +208,33 @@ des éléments sans rapport (squelette, image paresseuse) et garde la page
 « occupée » indéfiniment. Chercher le bouton Stop par **préfixe de label**,
 et les spinners **dans** le composer ou dans la dernière réponse.
 
+**Attentes et onglet en arrière-plan (v5.5.0).** Chrome étouffe les timers
+d'une page cachée : 1 s, puis **1 par minute** après cinq minutes en
+arrière-plan dès que la chaîne de timers atteint 5 appels — et une boucle de
+polling *est* une chaîne. Une attente qui demandait 1,5 s de calme se
+réveillait une minute plus tard : la requête prenait 2 à 5 minutes et se
+terminait **instantanément** en revenant sur l'onglet. Chrome peut aussi
+**geler** un onglet caché et silencieux (Energy Saver, > 5 min).
+
+Règle, et rien de plus :
+
+- dans `content.js`, **jamais `setTimeout` directement** : `B.sleep` ;
+- `B.sleep` garde le timer ordinaire quand l'onglet est **visible** (non
+  étouffé, le plus précis, coût nul) ; en arrière-plan il passe par les
+  timers d'un **Worker dédié** (`providers/ticker.js`, non étouffés), sondé
+  (`ping`) avant d'être cru, révoqué après deux réveils manqués, sinon par un
+  rebond `MessageChannel` (le `setTimeout` est armé depuis une tâche
+  *message*, la chaîne ne monte jamais à 5) ;
+- l'onglet tient un **Web Lock** pendant ces attentes (l'opt-out de gel que
+  Chrome documente), et `background.js` pose `autoDiscardable: false` sur les
+  onglets pilotés (la mise en veille mémoire déchargerait le script).
+
+**Ce n'est qu'un changement de source de timer :** la détection, l'extraction
+et les boucles restent celles de la v5.3.1 (v5.5.0). Une v5.4.0 a voulu tout réécrire
+(lecture bon marché, sondes de démarrage, réinjection conditionnelle, watchdog
+applicatif) : elle a cassé le trajet des jobs — ne pas réintroduire ces
+changements sans les tester sur un vrai fournisseur, onglet **en arrière-plan**.
+
 **Coût de l'extraction :** le polling doit rester **bon marché**. La
 conversion markdown complète (clone DOM + `innerText` + regex) ne doit pas
 tourner à chaque tick : elle coûte en O(longueur de la réponse). Polling sur
@@ -597,5 +624,17 @@ de version cassait le build à chaque fois.
   de la machine, pas du code. Vider `sessions.json` remet le contexte à zéro.
 - Un `MutationObserver` sur toute la page est coûteux : observer un
   sous-arbre, jamais `document`.
+- **Ne jamais ajouter un `setTimeout` brut dans `content.js`** : `B.sleep`
+  seul sait choisir une source de timer que Chrome n'étouffe pas (§4.2).
+- Le Worker `providers/ticker.js` doit rester dans `web_accessible_resources`
+  pour **tous** les hôtes du content script, sinon `new Worker()` échoue et
+  les attentes retombent dans les paliers de Chrome.
+- `content.js` publie sa version (`CS_VERSION`) : une réinjection de la même
+  version ne démarre pas un second routeur, une version plus récente reprend la
+  main. **Incrémenter `CS_VERSION` à chaque livraison touchant l'extension** —
+  c'est ce qui remplace un routeur orphelin dans un onglet déjà ouvert.
+- Un prompt de plus de 8 000 caractères est écrit en **une seule** opération
+  (`setValue` natif) : le pipeline `execCommand` par éditeur prend des minutes
+  sur 100 KB. En dessous, il reste le meilleur chemin.
 - `api.github.com` et `grep.app` sont **rate-limités** depuis cette machine ;
   `lite.duckduckgo.com/lite/?q=` et `raw.githubusercontent.com` fonctionnent.

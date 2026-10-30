@@ -117,6 +117,11 @@
    * `files` are File/Blob objects built by the content script from the API's
    * image_url parts. Returns the number of files the page accepted.
    */
+  // Files attached for the NEXT message. `sendPrompt` only waits for an
+  // upload when there is one: that wait is useless (and can last its whole
+  // timeout) for the 99 % of sends that carry no image.
+  let pendingUploads = 0;
+
   async function attachFiles(files) {
     const input = findFileInput();
     if (!input) throw new Error("DeepSeek: file input not found");
@@ -141,6 +146,7 @@
         "DeepSeek: attachment not accepted (check the file type/size; the UI shows an error next to the composer)"
       );
     }
+    pendingUploads += list.length;
     return accepted;
   }
 
@@ -656,9 +662,12 @@
     const want = String(text || "").trim();
     const target = el || findInput();
     if (!target) return null;
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
+    // 3 attempts, not 8: with two editions in each and a 2.5 s wait for the
+    // send control, the old ladder could sleep for two minutes on a page that
+    // never enables it, before trying the next editor (three of them).
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
       const written = await B.writeAndConfirm(() => target, text, {
-        attempts: 2,
+        attempts: 1,
         log: (m) => log(m),
       });
       if (!written) {
@@ -689,7 +698,18 @@
     // 1) The upload must be OVER before anything is typed: a prompt written
     //    while the page still re-renders is wiped by the app (the image
     //    stays, the text disappears).
-    await waitUploadSettled();
+    //
+    //    Only when this message really carries a file: the check scans the
+    //    whole page for previews and spinners, and a site that always shows a
+    //    spinner made it wait its full timeout on EVERY send (90 s before
+    //    v5.5.0) — with nothing to upload.
+    if (pendingUploads) {
+      try {
+        await waitUploadSettled({ timeout: 20000 });
+      } finally {
+        pendingUploads = 0;
+      }
+    }
 
     // 2) Write the prompt, trying every candidate editor: the current
     //    DeepSeek build drives a rich-text editor, the previous ones a

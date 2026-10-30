@@ -626,3 +626,175 @@ perdue, puis une relance. L'ordre est inversé : `reportTabs()` **puis**
 récupération du job, la première requête aboutit du premier coup.
 
 Résultat : **268 tests passent, 0 échec, 0 ignoré**.
+
+## 14. L'onglet en arrière-plan : les timers, et rien d'autre (v5.5.0)
+
+### Ce qui était cassé
+
+Une requête lancée depuis un autre programme aboutissait, mais parfois elle
+restait bloquée plusieurs minutes — et se terminait **instantanément** dès que
+l'onglet du fournisseur repassait au premier plan.
+
+Chrome étouffe les timers d'une page cachée : 1 réveil par seconde, puis **un
+par minute** après cinq minutes en arrière-plan, dès que la chaîne de timers
+atteint cinq appels (« intensive wake-up throttling », Chrome 88+). Toutes les
+attentes de l'extension étaient des chaînes de ce type : une vérification
+d'inactivité qui demandait 1,5 s de calme se réveillait une minute plus tard.
+Chrome peut en plus **geler** complètement un onglet caché et silencieux
+(Energy Saver) : plus aucun timer ni gestionnaire de message.
+
+### Ce que la v5.4.0 a fait — et pourquoi elle a été annulée
+
+La v5.4.0 a traité le symptôme en réécrivant tout le trajet : lecture
+« bon marché » de la réponse dans les sept fournisseurs, sonde de démarrage
+avec signature, attente d'inactivité de 250 ms, réinjection conditionnelle des
+scripts, battement de cœur, chien de garde local, file de poll remaniée.
+Résultat observé chez l'utilisateur, à chaque requête :
+
+- `Tab is already running another job` en boucle sur le même onglet ;
+- onglet figé dès l'envoi, interface qui finit de répondre mais le proxy ne
+  reçoit rien ;
+- plus lent qu'avant, y compris sur des requêtes qui marchaient.
+
+Ces changements touchaient la détection de fin de réponse et l'extraction —
+c'est-à-dire exactement ce que la v5.3.1 faisait bien. **Ils sont annulés** :
+`content.js`, `background.js`, `base.js` (hors timers) et les sept
+`providers/*.js` sont de nouveau **identiques à la v5.3.1**, octet pour octet.
+
+### Le correctif, minimal
+
+- `extension/providers/ticker.js` (nouveau) : un **Worker dédié** porte les
+  timers. Ses timers ne sont pas étouffés. `base.js:TimerHub` le sonde
+  (`ping`) avant de lui faire confiance, le révoque après deux réveils
+  manqués, et arme un garde-fou par attente (aucune attente ne peut rester
+  suspendue).
+- repli **`MessageChannel`** : le `setTimeout` est armé depuis une tâche
+  *message*, pas depuis une tâche *timer* — le niveau d'imbrication repart à 1,
+  la chaîne n'atteint jamais 5, le palier « 1 par minute » ne s'applique pas.
+- **Web Lock** (`B.keepTabAwake`) tenu pendant les attentes d'un onglet caché :
+  c'est l'opt-out de gel documenté par Chrome.
+- `background.js` : `autoDiscardable: false` sur les onglets pilotés (la mise
+  en veille mémoire les déchargerait, donc perdrait le job).
+- `content.js` : ses trois `setTimeout` passent par `B.sleep`. **Trois lignes**,
+  aucune autre modification ; un onglet **visible** garde son timer ordinaire,
+  donc le cas courant ne change pas du tout.
+
+Déclarer le Worker exige une entrée `web_accessible_resources` dans
+`manifest.json` (tous les hôtes du content script).
+
+Résultat : la suite complète passe, et `tests/test_extension_timers.py`
+vérifie que le Worker est déclaré, que `base.js` délègue son `sleep`, qu'aucun
+timer brut ne subsiste dans `content.js`, et que les sept fournisseurs n'ont
+pas bougé. Ses tests de comportement demandent Chromium (comme les autres
+tests DOM du projet).
+
+## 15. Les 20 secondes perdues entre deux requêtes, et le premier envoi d'un agent (v5.5.0)
+
+Mesuré sur un journal réel (DeepSeek, deux clients) :
+
+| Trajet | Ce qui se passait | Après |
+|---|---|---|
+| Némésis, prompt de 27 c | 22 s entre « job queued » et « Starting job » | ~0 s |
+| Qwen Code, prompt de 95 KB | 160 s puis `Provider did not start responding` | envoi en quelques secondes, puis attente de la réponse |
+
+### 1. Les 22 s entre deux requêtes
+
+Trois trous, tous dans le chemin entre le proxy et le premier caractère tapé :
+
+- `JobManager.take_wait` vidait son événement de réveil **après** avoir regardé
+  les files : un job créé entre les deux était manqué et le long-poll dormait
+  ses 20 s complètes, pendant qu'une requête attendait. L'événement est
+  maintenant vidé **avant**.
+- `background.js` attendait l'alarme (30 s) pour retenter un poll quand le
+  service worker s'était endormi entre deux jobs. Un résultat (ou une erreur)
+  réveille désormais la boucle **immédiatement** : `schedule(0)`.
+- l'extension est réveillée par `chrome.runtime.onInstalled`/`onStartup`, donc
+  un rechargement d'extension ne laisse plus la boucle arrêtée.
+
+### 2. Le premier envoi d'un agent (Qwen Code)
+
+`sendPrompt` de DeepSeek tentait **8 fois par compositeur, sur 3 compositeurs**,
+avec deux écritures et 2,5 s d'attente du bouton à chaque tour : jusqu'à deux
+minutes de sommeil avant d'abandonner, et une erreur trompeuse à la fin. Et
+l'écriture d'un prompt de 95 KB passait par `execCommand("insertText")`, que
+chaque éditeur re-rend.
+
+- échelle ramenée à **3 tentatives** et une seule écriture par tentative ;
+- un prompt de plus de 8 000 caractères est écrit **en une fois** (setter natif
+  + un événement `input`), plus par le pipeline d'insertion ;
+- l'attente de fin d'upload ne s'exécute **que si un fichier a été joint**
+  (elle scannait toute la page à chaque envoi) ;
+- la détection de démarrage compare enfin **deux mesures comparables** : la
+  signature d'activité d'avant l'envoi avec celle d'après (avant, une signature
+  `« 12:340 »` était comparée au markdown de la réponse précédente — donc
+  jamais égale) ;
+- fenêtre de démarrage portée à **90 s** : un site qui préremplit 100 KB de
+  contexte n'est pas « bloqué » ;
+- si le compositeur garde le texte, l'échec est immédiat et **explicite**
+  (« the page kept the message (N chars) ») au lieu d'attendre 25 s puis
+  d'accuser le fournisseur ; si le compositeur est vide, on continue d'attendre
+  la réponse.
+
+### 3. Un robot périmé dans l'onglet
+
+Un content script survit au rechargement de l'extension, mais son
+`chrome.runtime` est mort : il ne peut plus rien rapporter et garde pourtant
+`__NEMAPI_RUNNING_JOB__`. `content.js` porte désormais une **version** : une
+réinjection de la même version ne démarre pas un second routeur, une version
+**plus récente** prend la main (le routeur orphelin, lui, ne reçoit plus de
+message).
+
+### 4. Une ligne de mesure par job
+
+Le journal du proxy reçoit maintenant, à chaque requête :
+
+```
+Timing 0dff905d (deepseek): typed 1.2s, start 0.8s, answer 17.4s, 42 chars
+```
+
+Envoi, démarrage, génération : une requête lente est attribuable d'un coup
+d'œil, sans campagne de logs.
+
+Résultat : **216 tests passent, 0 échec** (4 contrôles statiques ajoutés à
+`tests/test_extension_timers.py`).
+
+## 16. v5.5.0 — Version stable (2026-10-30)
+
+v5.4.1 et v5.4.2 ont été livrées, testées sur un vrai fournisseur (DeepSeek,
+deux clients : NEMESIS et Qwen Code) et **retenues** : plus de lenteur
+anormale, plus d'onglet figé, plus de job corrompu. Elles deviennent **5.5.0**,
+la version stable, dont le contenu est :
+
+1. **Onglet en arrière-plan** (§14) — timers d'un Worker dédié, repli
+   `MessageChannel`, Web Lock, onglets pilotés hors mise en veille mémoire.
+2. **Latence et premier envoi** (§15) — réveil du long-poll, écriture d'un gros
+   prompt en une fois, échelle d'envoi réduite, détection de démarrage
+   comparable, ligne `Timing`, remplacement d'un routeur périmé.
+
+### Ce que 5.5.0 ne fait pas
+
+Elle ne touche **pas** à la logique de la v5.3.1 : `content.js` (hors attentes,
+démarrage et télémétrie), `background.js` (hors réveil du poll, protection des
+onglets et réveil du service worker), `base.js` (hors timers et écriture des
+très gros prompts) et les sept `providers/*.js` (hors échelle d'envoi de
+DeepSeek) sont inchangés. C'est la leçon de la v5.4.0 : une réécriture large du
+trajet d'un job ne se valide pas sur une journée, et casse ce qui marchait.
+
+### Vérifications
+
+- `cd proxy && .venv/bin/python -m pytest -q` → **216 passés, 65 ignorés**
+  (les tests Playwright restent ignorés faute de Chromium dans cet
+  environnement ; ils se lancent chez l'utilisateur).
+- `node --check` sur les onze fichiers JavaScript de l'extension.
+- Harnais jsdom : job complet, deux jobs consécutifs sur le même onglet,
+  rotation Worker → `MessageChannel` → timer, page refusant le Worker (CSP),
+  préremplissage lent, message gardé par le compositeur.
+- Relevé sur le journal de l'utilisateur : latence entre deux requêtes passée
+  de ~22 s à moins d'une seconde, et premier envoi de Qwen Code (95 KB) qui
+  aboutit au lieu d'échouer après 160 s.
+
+### Mise à jour depuis une 5.4.x
+
+Recharger l'extension (`chrome://extensions`), redémarrer le proxy. Le premier
+job remplace seul le routeur de l'onglet : la version de `content.js` est
+publiée dans la page, un routeur plus ancien ne se défend plus.

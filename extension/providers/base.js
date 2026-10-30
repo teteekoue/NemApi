@@ -4,8 +4,279 @@
 (function (global) {
   "use strict";
 
+  /* ------------------------------------------------------------------ */
+  /* Timers — the hidden-tab problem (v5.5.0, minimal version)            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Timers that keep their pace in a hidden (background) tab.
+   *
+   * Chrome throttles a hidden page's chained timers: one wake per second, and
+   * — after five minutes hidden, with a timer chain of 5+ (every poll loop is
+   * such a chain) — ONE wake per MINUTE ("intensive wake-up throttling",
+   * Chrome 88+). A wait that asks for 1.5 s of quiet then woke up a minute
+   * later: a whole request took 2 to 5 minutes and finished INSTANTLY as soon
+   * as the tab came back to the foreground. That is the random "it only works
+   * when I look at the tab" bug.
+   *
+   * This ONLY changes the timer source: the wait loops, the detection and the
+   * extraction are untouched (v5.3.1 behaviour).
+   *
+   *  1. a dedicated Worker (`providers/ticker.js`): its timers are not
+   *     throttled. It is pinged before being trusted, and written off after
+   *     two missed wake-ups;
+   *  2. a MessageChannel bounce: the `setTimeout` is armed from a MESSAGE
+   *     task (nesting level 1), so the chain never reaches 5 and the
+   *     "once per minute" tier never applies (1 s granularity at worst);
+   *  3. a plain `setTimeout`, for a page without the extension (tests) and
+   *     for a visible tab (the cheapest, most precise timer).
+   */
+  const TimerHub = (function () {
+    const GUARD_MS = 2500;
+    const PROBE_MS = 1200;
+    const worker = { state: "unknown", ref: null, seq: 1, waits: new Map(), guards: new Map(), misses: 0, gen: 0 };
+    const bounce = { port: null, keep: null, seq: 1, waits: new Map(), queue: [] };
+
+    function extensionAvailable() {
+      try {
+        return (
+          typeof chrome !== "undefined" &&
+          !!chrome.runtime &&
+          typeof chrome.runtime.getURL === "function"
+        );
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function releaseWorkerWaits() {
+      const pending = Array.from(worker.waits.values());
+      worker.waits.clear();
+      for (const id of Array.from(worker.guards.keys())) dropGuard(id);
+      for (const entry of pending) {
+        try {
+          entry.resolve();
+        } catch (_) {}
+      }
+    }
+
+    function dropGuard(id) {
+      const handle = worker.guards.get(id);
+      if (handle === undefined) return;
+      worker.guards.delete(id);
+      try {
+        clearTimeout(handle);
+      } catch (_) {}
+    }
+
+    function retireWorker() {
+      worker.gen += 1;
+      try {
+        worker.ref && worker.ref.terminate();
+      } catch (_) {}
+      worker.ref = null;
+      worker.state = "unavailable";
+      releaseWorkerWaits();
+    }
+
+    /** Spawn the worker and CONFIRM it answers (`ping`) before trusting it. */
+    function startWorker() {
+      if (worker.state !== "unknown") return;
+      worker.state = "unavailable";
+      if (!extensionAvailable() || typeof Worker !== "function") return;
+      let ref = null;
+      try {
+        ref = new Worker(chrome.runtime.getURL("providers/ticker.js"));
+      } catch (_) {
+        return; // CSP of the page (`worker-src`), or the resource is missing
+      }
+      const gen = worker.gen;
+      try {
+        ref.onmessage = function (event) {
+          const data = (event && event.data) || {};
+          const id = data.id;
+          if (data.type === "pong") {
+            if (id === "probe" && gen === worker.gen) {
+              worker.state = "ready";
+              worker.ref = ref;
+            }
+            return;
+          }
+          const entry = id != null ? worker.waits.get(id) : null;
+          if (!entry) return;
+          worker.waits.delete(id);
+          dropGuard(id);
+          worker.misses = 0;
+          try {
+            entry.resolve();
+          } catch (_) {}
+        };
+        ref.onerror = function () {
+          retireWorker();
+        };
+      } catch (_) {
+        return;
+      }
+      try {
+        ref.postMessage({ type: "ping", id: "probe" });
+      } catch (_) {
+        return;
+      }
+      // No pong: the page refuses the worker. Keep it alive (a late `pong`
+      // revives it) but stop trusting it.
+      setTimeout(function () {
+        if (gen === worker.gen && worker.state !== "ready") worker.state = "unavailable";
+      }, PROBE_MS);
+    }
+
+    function arriveOnTime(id) {
+      return function () {
+        const entry = worker.waits.get(id);
+        if (!entry) return; // the worker answered: nothing to repair
+        worker.waits.delete(id);
+        worker.misses += 1;
+        if (worker.misses >= 2) {
+          // A worker that answers nothing is worse than no worker: the guard
+          // would add GUARD_MS to every single wait.
+          retireWorker();
+        }
+        try {
+          entry.resolve();
+        } catch (_) {}
+      };
+    }
+
+    function workerSleep(ms) {
+      const id = worker.seq++;
+      return new Promise((resolve) => {
+        worker.waits.set(id, { resolve: resolve });
+        try {
+          worker.ref.postMessage({ type: "sleep", id: id, ms: ms });
+        } catch (_) {
+          worker.waits.delete(id);
+          return resolve();
+        }
+        worker.guards.set(
+          id,
+          setTimeout(function () {
+            worker.guards.delete(id);
+            arriveOnTime(id)();
+          }, ms + GUARD_MS)
+        );
+      });
+    }
+
+    function startBounce() {
+      if (bounce.port) return;
+      try {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = function () {
+          const id = bounce.queue.shift();
+          if (id === undefined) return;
+          const entry = bounce.waits.get(id);
+          if (!entry) return;
+          bounce.waits.delete(id);
+          // Armed from a MESSAGE task, not from a timer task: nesting level 1.
+          setTimeout(function () {
+            try {
+              entry.resolve();
+            } catch (_) {}
+          }, entry.ms);
+        };
+        // The endpoint must stay reachable: a port with no reference left is
+        // collected and stops delivering.
+        bounce.port = channel.port2;
+        bounce.keep = channel.port1;
+      } catch (_) {
+        bounce.port = null;
+        bounce.keep = null;
+      }
+    }
+
+    function bounceSleep(ms) {
+      const id = bounce.seq++;
+      return new Promise((resolve) => {
+        bounce.waits.set(id, { ms: ms, resolve: resolve });
+        bounce.queue.push(id);
+        try {
+          bounce.port.postMessage(id);
+        } catch (_) {
+          bounce.waits.delete(id);
+          resolve();
+        }
+      });
+    }
+
+    /**
+     * Sleep `ms`.
+     *
+     * A VISIBLE tab keeps the plain timer: it is not throttled, it is the most
+     * precise and it costs nothing. Only a hidden tab is worth a round trip
+     * through the Worker (or the bounce).
+     */
+    function sleep(ms) {
+      const delay = Math.max(0, Number(ms) || 0);
+      let hidden = false;
+      try {
+        hidden = !!document.hidden;
+      } catch (_) {}
+      if (!delay || !hidden) return new Promise((r) => setTimeout(r, delay));
+      // A hidden tab may be frozen after five minutes: opt out before waiting.
+      keepTabAwake();
+      startWorker();
+      if (worker.state === "ready" && worker.ref) return workerSleep(delay);
+      startBounce();
+      if (bounce.port) return bounceSleep(delay);
+      return new Promise((r) => setTimeout(r, delay));
+    }
+
+    return {
+      sleep: sleep,
+      /** "worker" | "message" | "timer" — what a hidden tab actually uses. */
+      mode: function () {
+        if (worker.state === "ready" && worker.ref) return "worker";
+        if (bounce.port) return "message";
+        return "timer";
+      },
+    };
+  })();
+
   function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    return TimerHub.sleep(ms);
+  }
+
+  /**
+   * Keep this tab out of Chrome's freezer.
+   *
+   * "Freezing on Energy Saver" (desktop, Chrome 133+) suspends the task
+   * execution of a tab that has been hidden and silent for five minutes:
+   * timers, event handlers and promise jobs all stop, and the tab only runs
+   * again when the user activates it — a request in flight then simply waits
+   * forever. The documented opt-out is to HOLD A WEB LOCK.
+   *
+   * Called from `sleep()` only when the tab is hidden, so a visible tab pays
+   * nothing.
+   */
+  function keepTabAwake() {
+    try {
+      if (!navigator || !navigator.locks || typeof navigator.locks.request !== "function") {
+        return "unavailable";
+      }
+      if (global.__NEMAPI_KEEP_AWAKE__) return global.__NEMAPI_KEEP_AWAKE__;
+      global.__NEMAPI_KEEP_AWAKE__ = "requested";
+      navigator.locks
+        .request("nemapi:keep-page-alive", { mode: "shared" }, function () {
+          global.__NEMAPI_KEEP_AWAKE__ = "held";
+          // Never resolves: the lock is held for the life of the tab.
+          return new Promise(function () {});
+        })
+        .catch(function () {
+          global.__NEMAPI_KEEP_AWAKE__ = "failed";
+        });
+      return "requested";
+    } catch (_) {
+      return "failed";
+    }
   }
 
   function waitFor(selector, timeout = 12000) {
@@ -198,7 +469,15 @@
     // 3) textarea / input. A native insertion is the most compatible form:
     //    it bypasses React's value tracker (a plain `el.value = x` updates
     //    the tracker too, and React then sees "no change" and drops it).
-    if (!el.disabled && !el.readOnly) {
+    //
+    //    But NOT for a very large prompt: an agent sends 90 to 120 KB on its
+    //    first turn, and `execCommand("insertText")` feeds it to the editor's
+    //    input handlers, which re-render the controlled field on every
+    //    insertion — the write then takes minutes (the "first request takes
+    //    3 to 5 minutes" report). Above this size the field is written once,
+    //    through the native setter below, then a single `input` event.
+    const big = value.length > 8000;
+    if (!el.disabled && !el.readOnly && !big) {
       clearNativeValue(el);
       placeCaretEnd(el);
       if (insertTextNative(el, value) && editorText(el).trim() === value.trim()) {
@@ -215,8 +494,11 @@
       if (desc && desc.set) desc.set.call(el, v);
       else el.value = v;
     };
-    setVal("");
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    if (!big) {
+      // make React see a change (it compares with its own tracker)
+      setVal("");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     setVal(value);
     try {
       el.dispatchEvent(
@@ -2577,7 +2859,7 @@
    * @deprecated use waitUploadFinished(): it also PROVES that the app took
    * the file instead of assuming a quiet area.
    */
-  async function waitForUploadSettled({ timeout = 90000, stableMs = 1800, pollMs = 300 } = {}) {
+  async function waitForUploadSettled({ timeout = 20000, stableMs = 1800, pollMs = 300 } = {}) {
     const t0 = Date.now();
     let last = null;
     let stableSince = Date.now();
@@ -2663,6 +2945,8 @@
 
   global.NemApiBase = {
     sleep,
+    timerMode: TimerHub.mode,
+    keepTabAwake,
     waitFor,
     queryFirst,
     queryAll,
