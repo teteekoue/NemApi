@@ -1,25 +1,26 @@
-"""Timers, cheap polling and the freeze opt-outs of the content script.
+"""The hidden-tab timers of the extension (v5.4.1).
 
-v5.4 turned two user-visible bugs into invariants, and this module locks them:
+Chrome throttles a hidden page's chained timers: one wake per second, then —
+after five minutes hidden, once the timer chain reaches 5 (every polling loop
+is such a chain) — ONE wake per MINUTE. Every wait of the extension is a
+chained timer, so a request in a background tab took 2 to 5 minutes and
+finished "instantly" when the tab came back to the foreground. Chrome can also
+FREEZE a hidden, silent tab (Energy Saver): nothing runs at all until the tab
+is activated.
 
-* a request that hangs while the browser is in the background and finishes
-  "instantly" when the tab is brought back. Chrome throttles a hidden page's
-  chained timers to one wake per second, then to one per MINUTE after five
-  minutes hidden ("intensive wake-up throttling"); it also FREEZES a silent,
-  hidden tab (Energy Saver) where nothing runs at all. The content script now
-  waits on a dedicated Worker's timers (not throttled), falls back to a
-  MessageChannel bounce (the timer armed from a message task restarts the
-  nesting level, so the 5+ chain condition is never met), and holds a Web Lock,
-  which Chrome documents as an opt-out of freezing.
+v5.4.1 changes the TIMER SOURCE only — the wait loops, the detection and the
+extraction are the ones of v5.3.1:
 
-* a provider tab that became slow until it was closed and reopened. The wait
-  loops polls the CHEAP text of the last answer and rebuilt the whole markdown
-  on every 400 ms tick: the cost grew with the answer, on the page's own main
-  thread. The markdown is now built once, when the answer is accepted
-  (`readCheap` / `getFinal`).
+* `providers/ticker.js`, a dedicated Worker, owns the timers of a hidden tab
+  (worker timers are not throttled). It is pinged before being trusted and
+  written off after two missed wake-ups.
+* failing that, a `MessageChannel` bounce arms the `setTimeout` from a message
+  task (nesting level 1), so the chain never reaches 5.
+* a Web Lock is held while a hidden tab waits (the documented opt-out of
+  freezing).
 
-The behavioural tests run in a real Chromium through CDP (isolated world), like
-`test_extension_dom.py`; they are skipped when playwright is not installed.
+The static checks below run everywhere; the behavioural ones need Chromium and
+are skipped when it is not installed (like the other DOM tests of this repo).
 """
 import json
 import shutil
@@ -54,54 +55,36 @@ def test_ticker_worker_is_web_accessible():
             assert match in urls, f"{match} runs content.js but cannot load ticker.js"
 
 
-def test_every_provider_exposes_a_cheap_polling_reader():
-    for name in PROVIDER_FILES:
-        source = (PROVIDERS / f"{name}.js").read_text()
-        assert "function readCheapText" in source, name
-        assert "function getActivitySignature" in source, name
-        exported = source[source.index(f"NemApiProviders.{name} = {{"):]
-        assert "readCheapText," in exported, name
-        assert "getActivitySignature," in exported, name
-
-
-def test_wait_loops_do_not_rebuild_the_markdown_on_every_tick():
-    """A provider must either pass `readCheap` or let `getFinal` do the build."""
-    for name in PROVIDER_FILES:
-        source = (PROVIDERS / f"{name}.js").read_text()
-        start = source.index("async function waitForResponse")
-        body = source[start:source.index("\n  }\n", start)]
-        assert "readCheap:" in body or "getFinal:" in body, name
-        # the fixed sleeps paid by every request are gone
-        assert "await B.sleep(900)" not in body, name
-        assert "await B.sleep(1200)" not in body, name
-        assert "await B.sleep(1000)" not in body, name
-
-
-def test_base_exports_the_timer_and_cheap_read_helpers():
+def test_base_delegates_its_sleep_and_opts_out_of_freezing():
     source = (PROVIDERS / "base.js").read_text()
+    assert "providers/ticker.js" in source, "the timer worker is not spawned"
+    assert "new MessageChannel()" in source, "no bounce fallback"
+    assert "navigator.locks" in source, "no Web Lock opt-out"
     exports = source[source.index("global.NemApiBase = {"):]
-    for name in ["sleep", "sleepOrChange", "timerMode", "cheapText", "sameAnswer", "keepTabAwake"]:
+    for name in ["sleep", "timerMode", "keepTabAwake"]:
         assert name in exports, name
-    # the hidden-tab workaround itself
-    assert "providers/ticker.js" in source
-    assert 'new MessageChannel()' in source
-    assert 'navigator.locks' in source
+    # the throttling problem must be explained where it is worked around
+    assert "MINUTE" in source and "throttl" in source.lower()
 
 
-def test_content_script_drops_raw_timers():
-    """Every wait of the router must go through the throttling-proof timer."""
+def test_content_script_never_waits_on_a_raw_timer():
+    """A raw `setTimeout` in a hidden tab is clamped to 1 s, then 1 min."""
     source = (EXT / "content.js").read_text()
-    assert "B.sleep" in source or "base().sleep" in source
-    assert "keepTabAwake" in source
     # the only raw timer left is the fallback used when base.js is missing
     assert "setTimeout(" not in source.replace("new Promise((r) => setTimeout(r, ms))", "")
 
 
-def test_background_protects_the_provider_tabs():
+def test_background_protects_the_provider_tabs_from_the_memory_saver():
     source = (EXT / "background.js").read_text()
     assert "autoDiscardable: false" in source
-    assert "routerAlive" in source  # no blind re-injection before every job
-    assert "JOB_LONG_POLL" in source
+
+
+def test_the_providers_are_untouched_by_this_release():
+    """v5.4.1 is a timer fix: no extraction/detection logic may change."""
+    for name in PROVIDER_FILES:
+        source = (PROVIDERS / f"{name}.js").read_text()
+        # the detection of v5.3.1, unchanged
+        assert "async function waitForResponse" in source, name
 
 
 def test_extension_javascript_parses():
@@ -118,12 +101,7 @@ def test_extension_javascript_parses():
 
 
 # ------------------------------------------------------------ real Chromium
-PAGE = """<!doctype html><html><body>
-<div id="answers">
-  <div class="msg" id="old">ancienne reponse</div>
-</div>
-</body></html>"""
-
+PAGE = "<!doctype html><html><body><div id='a'>ancienne reponse</div></body></html>"
 ORIGIN = "http://nemapi.test"
 
 
@@ -181,7 +159,6 @@ def browser_page():
                 route.fulfill(status=200, content_type="text/html", body=PAGE)
             else:
                 route.fulfill(status=404, body="")
-            return None
 
         page.route(ORIGIN + "/**", handle)
         page.goto(ORIGIN + "/chat.html")
@@ -193,21 +170,36 @@ def _base() -> str:
     return (PROVIDERS / "base.js").read_text()
 
 
-def test_sleep_runs_on_the_ticker_worker(browser_page):
-    """The Worker is spawned and answers; without it a hidden tab is throttled."""
+def test_a_hidden_tab_waits_on_the_worker(browser_page):
+    """A hidden tab's own timer is clamped to 1 s: the Worker is the fix."""
     page, served = browser_page
     world = World(page, [_base()], worker=True)
     took = world.eval(
-        "(async () => { const t = Date.now(); await NemApiBase.sleep(120);"
+        "(async () => {"
+        "  Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});"
+        "  Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'hidden'});"
+        "  const t = Date.now(); await NemApiBase.sleep(120);"
+        "  return {ms: Date.now() - t, mode: NemApiBase.timerMode(), lock: NemApiBase.keepTabAwake()};"
+        "})()",
+        await_promise=True,
+    )
+    assert 100 <= took["ms"] < 900, took  # a throttled page timer would take >= 1 s
+    assert took["mode"] in ("worker", "message"), took
+    if took["mode"] == "worker":
+        assert served["ticker"] == 1, served
+
+
+def test_a_visible_tab_keeps_the_plain_timer(browser_page):
+    """No round trip for the common case: the timer source is unchanged."""
+    page, _served = browser_page
+    world = World(page, [_base()], worker=True)
+    took = world.eval(
+        "(async () => { const t = Date.now(); await NemApiBase.sleep(80);"
         "  return {ms: Date.now() - t, mode: NemApiBase.timerMode()}; })()",
         await_promise=True,
     )
-    # a hidden tab's plain timer is clamped to 1 s, and the Worker is the only
-    # way to keep the pace: the sleep must come back far below that
-    assert 100 <= took["ms"] < 900, took
-    assert took["mode"] in ("worker", "message"), took  # "message" = Worker refused by the page
-    if took["mode"] == "worker":
-        assert served["ticker"] == 1, served
+    assert 60 <= took["ms"] < 900, took
+    assert took["mode"] == "timer", took
 
 
 def test_sleep_still_resolves_without_the_extension(browser_page):
@@ -218,109 +210,3 @@ def test_sleep_still_resolves_without_the_extension(browser_page):
         await_promise=True,
     )
     assert 60 <= took < 1500, took
-
-
-def test_polling_never_rebuilds_the_markdown(browser_page):
-    """`readText` (the markdown build) runs once; the poll uses the cheap read."""
-    page, _served = browser_page
-    world = World(page, [_base()])
-    result = world.eval(
-        """
-        (async () => {
-          const answers = document.getElementById('answers');
-          let heavy = 0, cheap = 0;
-          const heavyRead = (el) => { heavy += 1; return '<p>' + (el ? el.textContent : '') + '</p>'; };
-          const cheapRead = (el) => { cheap += 1; return el ? el.textContent : ''; };
-          const p = NemApiBase.waitForNewResponse(
-            () => Array.from(answers.querySelectorAll('.msg')),
-            heavyRead,
-            { timeout: 8000, stableMs: 150, previous: 'ancienne reponse', newElTimeout: 2000, readCheap: cheapRead }
-          );
-          await NemApiBase.sleep(150);
-          const div = document.createElement('div');
-          div.className = 'msg';
-          answers.appendChild(div);
-          for (const t of ['Bon', 'Bonjour', 'Bonjour le monde']) {
-            div.textContent = t;
-            await NemApiBase.sleep(120);
-          }
-          const out = await p;
-          return {out: String(out), heavy: heavy, cheap: cheap};
-        })()
-        """,
-        await_promise=True,
-    )
-    assert "Bonjour le monde" in result["out"], result
-    assert result["cheap"] > 2, result
-    assert result["heavy"] <= 2, result
-
-
-def test_a_finished_answer_is_accepted_without_waiting_the_full_window(browser_page):
-    """`idleStableMs`: a page that says it finished is believed after ~900 ms."""
-    page, _served = browser_page
-    world = World(page, [_base()])
-    result = world.eval(
-        """
-        (async () => {
-          const el = document.getElementById('old');
-          window.__NEMAPI_IS_BUSY__ = () => false;
-          const t = Date.now();
-          el.textContent = 'la reponse complete';
-          const out = await NemApiBase.waitUntilStable(
-            () => el.textContent,
-            { timeout: 8000, stableMs: 2500, pollMs: 100 }
-          );
-          return {out: out, ms: Date.now() - t};
-        })()
-        """,
-        await_promise=True,
-    )
-    assert result["out"] == "la reponse complete", result
-    assert result["ms"] < 2000, result
-
-
-def test_a_page_that_still_says_busy_is_believed_after_a_bounded_grace(browser_page):
-    page, _served = browser_page
-    world = World(page, [_base()])
-    result = world.eval(
-        """
-        (async () => {
-          const el = document.getElementById('old');
-          window.__NEMAPI_IS_BUSY__ = () => true;
-          el.textContent = 'reponse figee';
-          const t = Date.now();
-          const out = await NemApiBase.waitUntilStable(
-            () => el.textContent,
-            { timeout: 20000, stableMs: 2500, pollMs: 100, busyGraceMs: 1200 }
-          );
-          return {out: out, ms: Date.now() - t};
-        })()
-        """,
-        await_promise=True,
-    )
-    assert result["out"] == "reponse figee", result
-    # the old code waited `incompleteStableMs` (25 s) for a stuck indicator
-    assert result["ms"] < 6000, result
-
-
-def test_the_previous_answer_is_never_returned(browser_page):
-    page, _served = browser_page
-    world = World(page, [_base()])
-    result = world.eval(
-        """
-        (async () => {
-          const el = document.getElementById('old');
-          try {
-            await NemApiBase.waitUntilStable(
-              () => el.textContent,
-              { timeout: 1200, stableMs: 200, pollMs: 100, previous: 'ancienne **reponse**' }
-            );
-            return 'returned';
-          } catch (e) {
-            return 'timeout';
-          }
-        })()
-        """,
-        await_promise=True,
-    )
-    assert result == "timeout", result

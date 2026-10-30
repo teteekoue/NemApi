@@ -457,13 +457,9 @@
    */
   async function extractPremium(msgEl) {
     if (!msgEl) return "";
-    // The DOM extraction is only a SAFETY HINT for the clipboard path
-    // (rejecting a clipboard payload that is the user's prompt): it must not
-    // cost a full markdown rebuild before every answer, which is what the
-    // code did — the clipboard usually succeeds and the rebuild was wasted.
-    const domHint = readCheapText(msgEl);
+    const fromDom = readMessageText(msgEl);
 
-    if (!B.premiumEnabled()) return readMessageText(msgEl);
+    if (!B.premiumEnabled()) return fromDom;
 
     // Ensure MAIN-world hook is live before clicking (CSP-safe path via background)
     try {
@@ -492,7 +488,7 @@
           'button[title*="Copy" i]',
           "button[class*='copy']",
         ],
-        { domAssistantText: domHint }
+        { domAssistantText: fromDom }
       );
       if (
         fromClip &&
@@ -520,7 +516,7 @@
       }
     }
 
-    return readMessageText(msgEl) || domHint;
+    return fromDom || readMessageText(msgEl);
   }
 
   function log(msg) {
@@ -558,44 +554,10 @@
     return B.findByText(["button", "[role='button']"], [/send/i, /submit/i], root);
   }
 
-  /**
-   * Cheap read of one answer: what the polling loops use.
-   *
-   * `readMessageText` clones the whole answer, rebuilds every code block and
-   * runs htmlToMarkdown: it is O(answer). Polling it twice a second (what the
-   * provider did before v5.4) was the main cost of the extension AND the
-   * reason this tab felt slow while a job ran: the page shares its only main
-   * thread with us.
-   */
-  function readCheapText(msgEl) {
-    if (!msgEl) return "";
-    try {
-      return B.cheapText(pickContentRoot(msgEl) || msgEl);
-    } catch (_) {
-      return "";
-    }
-  }
-
-  /** Cheap "is something moving?" probe (bubble count + length of the last one). */
-  function getActivitySignature() {
-    try {
-      const els = getMessageEls();
-      const last = els.length ? els[els.length - 1] : null;
-      return els.length + ":" + (last ? readCheapText(last).length : 0);
-    } catch (_) {
-      return "0:0";
-    }
-  }
-
   function getLastResponse() {
     const els = getMessageEls();
     if (els.length) return readMessageText(els[els.length - 1]);
     return "";
-  }
-
-  function lastMessageEl() {
-    const els = getMessageEls();
-    return els.length ? els[els.length - 1] : null;
   }
 
   async function sendPrompt(text) {
@@ -625,32 +587,29 @@
     // Stream finished once the per-message copy control is mounted
     if (findCopyButton(last)) return false;
     // Still streaming if content is short / changing and no copy yet
-    // textContent: innerText would force a layout on every poll
-    const t = (last.textContent || "").trim();
+    const t = (last.innerText || "").trim();
     if (t.length < 8) return true;
     const busy = last.querySelector('[class*="streaming"], [class*="generating"]');
     return !!(busy && B.isVisible(busy));
   }
 
   async function waitForResponse(previous = "") {
-    // No leading sleep any more: the wait itself watches for the new bubble
-    // from the very first tick (waitForGenerationStart already confirmed that
-    // the answer started). A flat 900 ms here was paid by every request.
+    await B.sleep(900);
     await B.waitForNewResponse(getMessageEls, readMessageText, {
       timeout: 180000,
-      stableMs: 2200,
+      stableMs: 2400,
       previous,
       newElTimeout: 25000,
-      readCheap: readCheapText,
     });
-    const last = lastMessageEl();
+    const els = getMessageEls();
+    const last = els.length ? els[els.length - 1] : null;
     if (!last) return "";
-    // The action footer (.copy-response-button) mounts just after the stream
-    // ends: a short bounded wait, not 2.4 s of polling on every answer.
-    for (let i = 0; i < 5; i++) {
+    // Give the action footer (.copy-response-button) time to mount after stream ends
+    for (let i = 0; i < 12; i++) {
       if (findCopyButton(last)) break;
-      await B.sleep(120);
+      await B.sleep(200);
     }
+    await B.sleep(250);
     try {
       return await extractPremium(last);
     } catch (_) {
@@ -676,8 +635,6 @@
     waitForResponse,
     getLastResponse,
     getResponseCount,
-    getActivitySignature,
-    readCheapText,
     isGenerating,
     findInput,
   };

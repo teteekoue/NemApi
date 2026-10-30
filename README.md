@@ -1,4 +1,4 @@
-# NemApi v5.4.0
+# NemApi v5.4.1
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
@@ -6,11 +6,9 @@
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
 
-**Correctifs v5.4.0 — vitesse et onglet en arrière-plan :**
-- ✅ **La requête qui « se débloque » quand on regarde l'onglet** : Chrome étouffe les timers d'un onglet caché (1 s, puis **1 par minute** après cinq minutes) et **gèle** un onglet silencieux (économie d'énergie). Les attentes passent désormais par les timers d'un **Worker dédié** (non étouffés), et l'onglet tient un **Web Lock** (l'opt-out de gel documenté par Chrome)
-- ✅ **Plus de polling coûteux** : les boucles d'attente lisent le texte brut de la dernière réponse et ne reconstruisent le markdown **qu'une fois**, à la fin — c'était jusqu'à 44 ms de travail sur le fil principal de la page toutes les 400 ms, ce qui la faisait ramer jusqu'à devoir la fermer
-- ✅ **Latence par requête réduite** de plusieurs secondes : plus de `sleep` fixes avant chaque envoi, vérification d'inactivité en 250 ms au lieu de 2,4 s, fin de réponse acceptée après 900 ms quand la page se dit prête, envoi « avalé » détecté en 20 s au lieu de 15 min
-- ✅ **Un onglet bloqué ne bloque plus le fournisseur** : battement de cœur du contenu, chien de garde côté proxy **et** côté page, onglet protégé de la mise en veille mémoire, relance automatique d'un onglet qui a perdu son script
+**Correctifs v5.4.1 — l'onglet en arrière-plan :**
+- ✅ **La requête qui « se débloque » quand on regarde l'onglet** : Chrome étouffe les timers d'un onglet caché (1 s, puis **1 par minute** après cinq minutes) et peut **geler** un onglet silencieux. Les attentes passent désormais par les timers d'un **Worker dédié** (non étouffés), avec repli `MessageChannel`, et l'onglet tient un **Web Lock** (l'opt-out de gel documenté). Un onglet **visible** garde son timer ordinaire : rien ne change pour le cas courant
+- ✅ **Aucune autre logique n'a bougé** : détection de fin de réponse, extraction, envoi, contexte incrémental et intégrations sont ceux de la v5.3.1. La v5.4.0, qui réécrivait ces chemins, a été **annulée** (voir `FIXES.md` §14)
 
 **Correctifs v5.3.1 :**
 - ✅ **La discussion web ne se rouvre plus à chaque requête** : la persistance devient le défaut pour **tous** les clients (le « Chat test » de l'interface comprise). Le mode classique ne rafraîchit plus l'URL ; seul le réglage explicite « Nouvelle discussion à chaque requête » peut le réactiver

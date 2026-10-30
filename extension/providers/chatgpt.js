@@ -296,22 +296,9 @@
   function readCheapText(msgEl) {
     if (!msgEl) return "";
     try {
-      // textContent, not innerText: innerText forces a layout on every tick
-      // and this reader runs ~3 times a second for the whole answer.
-      return String(msgEl.textContent || "");
+      return String(msgEl.innerText || msgEl.textContent || "");
     } catch (_) {
       return "";
-    }
-  }
-
-  /** Cheap "is something moving?" probe (turn count + length of the last one). */
-  function getActivitySignature() {
-    try {
-      const els = getMessageEls();
-      const last = els.length ? els[els.length - 1] : null;
-      return els.length + ":" + (last ? readCheapText(last).length : 0);
-    } catch (_) {
-      return "0:0";
     }
   }
 
@@ -354,8 +341,8 @@
   }
 
   async function waitForResponse(previous = "") {
-    // No leading sleep: the loop below already watches for the new turn and
-    // the end of the stream. A flat 1.2 s was paid by every request.
+    await B.sleep(1200);
+    // Wait until streaming ends and text stabilizes
     if (B.waitForNewResponse) {
       await B.waitForNewResponse(getMessageEls, readMessageText, {
         timeout: 180000,
@@ -374,18 +361,22 @@
       );
     }
 
+    // Extra: wait until Stop button gone
+    for (let i = 0; i < 30; i++) {
+      if (!isGenerating()) break;
+      await B.sleep(300);
+    }
+
     const els = getMessageEls();
     const last = els.length ? els[els.length - 1] : null;
     if (!last) return getLastResponse();
 
-    // Wait for the action bar of the turn (copy / like…): it only mounts once
-    // the answer is really complete, and it is the reliable "finished" signal
-    // on ChatGPT (the Stop button flickers off between two token batches).
-    // Bounded and short: 15 x 200 ms used to be paid on every answer.
-    for (let i = 0; i < 6; i++) {
+    // Wait for copy footer to mount
+    for (let i = 0; i < 15; i++) {
       if (findCopyButton(last) || findCopyButton(last.parentElement)) break;
-      await B.sleep(120);
+      await B.sleep(200);
     }
+    await B.sleep(250);
 
     try {
       return await extractPremium(last);
@@ -412,8 +403,6 @@
     waitForResponse,
     getLastResponse,
     getResponseCount,
-    getActivitySignature,
-    readCheapText,
     isGenerating,
     findInput,
   };

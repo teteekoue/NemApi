@@ -1,35 +1,7 @@
 /**
- * NemApi – content script router.
- *
- * Answers are detected HERE, in the provider page: the background only hands
- * out jobs and reports results. Three rules keep a request fast, and each one
- * exists because its absence cost seconds (or minutes) per request.
- *
- * 1. NO RAW TIMERS. Every wait goes through `B.sleep`, which delegates to a
- *    dedicated Worker (`providers/ticker.js`) when the tab is hidden. Chrome
- *    throttles a hidden page's chained timers to ONE wake per SECOND, then to
- *    one per MINUTE after five minutes hidden ("intensive wake-up
- *    throttling"): an idle check asking for 1.5 s of quiet woke up a minute
- *    later, so a whole request took two to five minutes — and it finished
- *    instantly as soon as the user brought the tab back to the front. That is
- *    the random "it only works when I look at the tab" bug.
- *
- * 2. NO EXPENSIVE POLLING. The loops read the CHEAP text of the last answer
- *    (a `textContent` read, `readCheapText`) and rebuild the markdown ONCE,
- *    when the answer is accepted. Polling the markdown rebuild every 400 ms
- *    kept the page's main thread busy for the whole answer, and the cost grew
- *    with the length of the answer — which is what made a provider tab lag
- *    until it was closed and reopened.
- *
- * 3. NOTHING MAY BLOCK THE TAB FOR EVER. A job has a heartbeat and a local
- *    watchdog: a page that never streams releases the tab and fails the job
- *    instead of leaving `__NEMAPI_RUNNING_JOB__` set (every later request was
- *    then rejected with "Tab is already running another job" until a reload).
- *
- * The tab also holds a Web Lock for its whole life (`B.keepTabAwake`): a page
- * that Chrome froze (Energy Saver, hidden and silent for five minutes) runs
- * NOTHING — no timer, no observer, no message handler — and the request only
- * completed when the user clicked the tab.
+ * NemApi v4.0 – content script router
+ * Accepts jobs, waits for page readiness is handled by background.
+ * One job at a time per tab; finished job ids are tracked briefly to ignore duplicates.
  */
 (function () {
   "use strict";
@@ -38,23 +10,19 @@
   window.__NEMAPI_RUNNING_JOB__ = null;
   window.__NEMAPI_FINISHED_JOBS__ = window.__NEMAPI_FINISHED_JOBS__ || new Set();
 
-  // How often a running job tells the background it is still alive. The
-  // background fails the job when the tab goes silent (frozen, crashed,
-  // reloaded): without it the provider slot stayed taken for the whole job
-  // timeout and the extension rejected every later job for that provider.
-  const HEARTBEAT_MS = 15000;
-  // Pace of the "is the page still working?" loops.
-  const IDLE_POLL_MS = 400;
-  // How long the answer may take to START before the send is declared lost.
-  const START_TIMEOUT_MS = 20000;
-
-  function base() {
-    return window.NemApiBase || {};
-  }
-
+  /**
+   * Wait `ms` through base.js.
+   *
+   * v5.4.1: the waits of this router used a raw `setTimeout`, which Chrome
+   * throttles in a hidden tab (1 s, then one wake per MINUTE). `B.sleep` picks
+   * a timer that is not throttled (dedicated Worker, else a MessageChannel
+   * bounce) — nothing else changes: the loops and the detection are the ones
+   * of v5.3.1.
+   */
   function sleep(ms) {
-    const B = base();
-    return B.sleep ? B.sleep(ms) : new Promise((r) => setTimeout(r, ms));
+    const B = window.NemApiBase || {};
+    if (B.sleep) return B.sleep(ms);
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   function resolveProvider() {
@@ -67,107 +35,90 @@
   }
 
   function detectProviderId() {
-    const provider = resolveProvider();
-    return provider ? provider.id : null;
-  }
-
-  /** Cheap "is the page changing?" signature (never a full extraction). */
-  function activity(provider) {
-    try {
-      const B = base();
-      if (B.activitySignature) return String(B.activitySignature(provider) || "");
-    } catch (_) {}
-    try {
-      return provider && provider.getResponseCount ? "n" + provider.getResponseCount() : "";
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function isGenerating(provider) {
-    try {
-      return !!(provider && provider.isGenerating && provider.isGenerating());
-    } catch (_) {
-      return false;
-    }
+    const p = resolveProvider();
+    return p ? p.id : null;
   }
 
   /**
-   * Wait until the provider is not generating anymore (leftover of the
-   * previous job). Typing while a previous answer still streams cuts it off,
-   * so this cannot be skipped — but it must not cost seconds when the page is
-   * simply idle, which is the common case.
+   * Wait until the provider is not generating anymore (previous job leftover).
+   * "Generating" = the page says so OR the last answer is still growing: the
+   * Stop-button detection is not reliable on every site, and typing (or
+   * clicking the send/stop button) while an answer streams would cut it off.
    *
-   * Fast path: one cheap probe, 250 ms of confirmation. The old code slept
-   * 800 ms twice and demanded a 1.5 s quiet window, i.e. 2.4 s on EVERY
-   * request, idle page or not.
+   * The busy flag is read AFTER the sleep (it used to be one iteration stale)
+   * and the wait is bounded: a stuck "Stop" indicator must not park the
+   * provider for a minute.
    */
   async function waitForIdle(provider, timeoutMs) {
     const t0 = Date.now();
-    if (!isGenerating(provider)) {
-      const first = activity(provider);
-      await sleep(250);
-      if (!isGenerating(provider) && activity(provider) === first) return true;
-    }
-    let last = activity(provider);
+    const B = window.NemApiBase || {};
+    const read = () => {
+      try {
+        if (B.activitySignature) return B.activitySignature(provider);
+        return (provider.getLastResponse && provider.getLastResponse()) || "";
+      } catch (_) {
+        return "";
+      }
+    };
+    let last = read();
     let quietSince = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-      await sleep(IDLE_POLL_MS);
-      const busy = isGenerating(provider);
-      const cur = activity(provider);
+      await sleep(800);
+      let busy = false;
+      try { busy = !!(provider.isGenerating && provider.isGenerating()); } catch (_) {}
+      const cur = read();
       if (cur !== last) {
         last = cur;
         quietSince = Date.now();
         continue;
       }
       const quiet = Date.now() - quietSince;
-      if (!busy && quiet >= 900) return true;
-      // A stuck "Stop" button must not park the provider for minutes: the send
-      // itself proves whether the page takes the prompt.
+      if (!busy && quiet >= 1500) return true;
+      // a stuck "generating" indicator must not block the slot for minutes
       if (busy && quiet >= 20000) return true;
     }
-    return false;
+    return false; // continue anyway; sendPrompt will handle it
   }
 
-  /**
-   * Nothing to clear before a job.
+  /** Clear any stale text left in the editor from a previous aborted job.
    *
-   * The editor is emptied by `B.pasteText` itself, which starts with a native
-   * `""` write. Touching the controlled textarea here (focus, input events,
-   * empty writes) leaves React in a state where the NEXT write is ignored —
-   * after an image upload the composer re-renders and the prompt never
-   * appears, so the send control never enables.
+   * Must go through the native value setter (B.pasteText): assigning
+   * `input.value = ""` directly desynchronises React's controlled textarea,
+   * after which every later native write is silently ignored — the prompt
+   * never appears in the composer and the send button never enables.
    */
   function clearEditor(provider) {
+    // Deliberately minimal: the editor is cleared by pasteText() itself, which
+    // starts with setVal("") before writing. Touching the controlled textarea
+    // here (focus, input events, empty writes) leaves React in a state where
+    // the NEXT write is ignored — after an upload the composer re-renders and
+    // the prompt never appears. Nothing to do before a job: the paste clears.
     void provider;
   }
 
   /**
-   * Did the answer START?
-   *
-   * Three independent signals: the bubble count grew, the provider says it is
-   * generating, or the cheap activity signature moved.
-   *
-   * `prevSig` is the SAME measure captured before the send. Comparing a
-   * signature with the markdown of the previous answer (what the code used to
-   * do) was always "different", so a send the page had silently swallowed was
-   * never detected and the request waited for its whole budget.
-   *
-   * Failing fast matters: a swallowed send (stale tab, silent rate limit)
-   * used to burn the full 900 s timeout.
+   * Detect "started": a NEW model-response bubble appeared (even with text
+   * identical to the previous answer), or the provider flipped to generating.
    */
-  async function waitForGenerationStart(provider, prevSig, prevCount, timeoutMs) {
+  async function waitForGenerationStart(provider, previous, prevCount, timeoutMs) {
     const t0 = Date.now();
+    const prev = (previous || "").trim();
+    const B = window.NemApiBase || {};
     while (Date.now() - t0 < timeoutMs) {
       try {
-        if (prevCount && provider.getResponseCount && provider.getResponseCount() > prevCount) {
-          return true;
+        if (prevCount && provider.getResponseCount && provider.getResponseCount() > prevCount) return true;
+        if (provider.isGenerating && provider.isGenerating()) return true;
+        // cheap signal: the full extraction rebuilds the markdown and is far
+        // too heavy to run every 400 ms
+        let cur = "";
+        if (provider.getActivitySignature) {
+          cur = String(provider.getActivitySignature() || "");
+        } else {
+          cur = (provider.getLastResponse && provider.getLastResponse() || "").trim();
         }
-        if (isGenerating(provider)) return true;
-        const cur = activity(provider);
-        if (cur && prevSig && cur !== prevSig) return true;
+        if (cur && cur !== prev) return true;
       } catch (_) {}
-      await sleep(250);
+      await sleep(400);
     }
     return false;
   }
@@ -175,27 +126,28 @@
   function rememberFinished(jobId) {
     const set = window.__NEMAPI_FINISHED_JOBS__;
     set.add(jobId);
+    // Cap memory: drop oldest when too many
     if (set.size > 40) {
-      // Cap memory: drop the oldest entry
       const first = set.values().next().value;
       set.delete(first);
     }
   }
 
   /**
-   * OpenAI `image_url` parts → `File` objects for the page's upload input.
-   *
-   * Data URLs only: the extension must never fetch a remote URL with the
-   * cookies of the provider tab (SSRF).
+   * Images sent by the API as OpenAI image_url parts → File objects for the
+   * page's upload input. Data URLs only: the proxy never lets the extension
+   * fetch a remote URL (SSRF, cookies of the provider tab).
    */
   function filesFromImages(images) {
-    const B = base();
+    const B = window.NemApiBase || {};
     const out = [];
     (images || []).forEach((img, i) => {
       try {
         const url = typeof img === "string" ? img : (img && img.url) || "";
         const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(url || "");
-        if (!m || !m[2]) throw new Error("image_url must be a base64 data: URL");
+        if (!m || !m[2]) {
+          throw new Error("image_url must be a base64 data: URL");
+        }
         const mime = m[1] || "image/png";
         const ext = (mime.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "") || "png";
         const name = (img && img.name) || `image-${i + 1}.${ext}`;
@@ -205,26 +157,6 @@
       }
     });
     return out;
-  }
-
-  /** Tell the background, on a timer, that this tab is still working. */
-  function startHeartbeat(jobId) {
-    let stopped = false;
-    const loop = async () => {
-      while (!stopped) {
-        await sleep(HEARTBEAT_MS);
-        if (stopped) return;
-        try {
-          await chrome.runtime.sendMessage({ action: "jobProgress", jobId: jobId });
-        } catch (_) {
-          return; // the extension was reloaded: the background knows the tab is gone
-        }
-      }
-    };
-    loop();
-    return () => {
-      stopped = true;
-    };
   }
 
   async function runJob(jobId, question, expectedProvider, model, premiumMd, jobTimeoutMs, images) {
@@ -240,11 +172,13 @@
       });
       return;
     }
-    if (window.__NEMAPI_RUNNING_JOB__ === jobId) return;
+    if (window.__NEMAPI_RUNNING_JOB__ === jobId) {
+      return;
+    }
 
     window.__NEMAPI_STOP__ = false;
     window.__NEMAPI_PREMIUM_MD__ = premiumMd !== false;
-    // answer budget = the proxy timeout minus a margin to post the result
+    // answer budget = proxy timeout minus a margin to post the result in time
     window.__NEMAPI_JOB_BUDGET_MS__ = Math.max(120000, (Number(jobTimeoutMs) || 900000) - 30000);
     const provider = resolveProvider();
     if (!provider) {
@@ -265,113 +199,80 @@
     }
 
     window.__NEMAPI_RUNNING_JOB__ = jobId;
-    const B = base();
-    const stopHeartbeat = startHeartbeat(jobId);
-    let typed = false; // the prompt reached the web UI
-    let settled = false; // no other outcome may be reported
-    let reported = false; // the job already has a result or an error
-
-    // Local watchdog: whatever happens in this page, the tab must not stay
-    // "busy" for ever. It used to: a loop that never settled kept
-    // __NEMAPI_RUNNING_JOB__ set, and every later request was rejected with
-    // "Tab is already running another job" until the tab was reloaded.
-    const watchdog = (async () => {
-      await sleep((window.__NEMAPI_JOB_BUDGET_MS__ || 900000) + 30000);
-      if (settled) return;
-      settled = true;
-      reported = true;
-      window.__NEMAPI_RUNNING_JOB__ = null;
-      window.__NEMAPI_STOP__ = true;
-      try {
-        await chrome.runtime.sendMessage({
-          action: "automationError",
-          jobId: jobId,
-          provider: provider.id,
-          typed: typed,
-          error: "the tab gave up on this job (local watchdog)",
-        });
-      } catch (_) {}
-    })();
-
+    let typed = false; // true once the prompt was submitted to the web UI
     try {
       console.log("[NemApi] Running job via", provider.id, model || "");
-      if (provider.findInput && !provider.findInput()) await sleep(300);
+      // Ensure input exists before pasting (background should have waited, but belt-and-suspenders)
+      if (provider.findInput && !provider.findInput()) {
+        await sleep(800);
+      }
       window.__NEMAPI_IS_BUSY__ = () => !!(provider.isGenerating && provider.isGenerating());
-      // bounded: a page that keeps "changing" (a spinner, an animation) must
-      // not eat the beginning of the job budget
-      await waitForIdle(provider, 25000);
-
-      // Read the previous answer AFTER the idle wait: an answer still
-      // streaming would otherwise be taken for the new one once it ends.
+      // Native-context hardening: if the previous job was left mid-generation
+      // (watchdog abort, navigation, retry), the provider may still be busy and
+      // the editor may hold unsent text.  Wait for idle, then clear the editor.
+      // bounded by the job budget: an idle wait must never eat the whole
+      // timeout the proxy granted for this job
+      await waitForIdle(provider, Math.min(120000, window.__NEMAPI_JOB_BUDGET_MS__ || 120000));
+      // read AFTER the idle wait: a previous answer still streaming would
+      // otherwise be taken for the new one once it finishes
       const previous = (provider.getLastResponse && provider.getLastResponse()) || "";
       clearEditor(provider);
-      // Snapshot BEFORE sending: a new bubble is the reliable "fresh answer"
-      // signal even when the new text is identical to the previous one.
+      // Snapshot the bubble count BEFORE sending — a new response bubble is the
+      // reliable "fresh answer" signal even when the text is identical.
       const prevCount = provider.getResponseCount ? provider.getResponseCount() : 0;
-      const prevSig = activity(provider);
-
+      // Multimodal request: the images go through the page's own upload input
+      // before the prompt is typed, exactly like a user attaching a screenshot.
       if (images && images.length) {
         if (typeof provider.attachFiles !== "function") {
           throw new Error(
             `Provider ${provider.id}: this site has no image upload in NemApi yet ` +
-              "(the file input was not found on the page)"
+            `(the file input was not found on the page)`
           );
         }
         const files = filesFromImages(images);
         await provider.attachFiles(files);
         console.log("[NemApi] attached", files.length, "image(s) on", provider.id);
       }
-
       await provider.sendPrompt(question);
       typed = true;
       if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
-
-      // A send the page swallowed (stale tab, rate-limit banner) must fail at
-      // once instead of polling the old answer until the watchdog.
-      const started = await waitForGenerationStart(provider, prevSig, prevCount, START_TIMEOUT_MS);
+      // If the model never STARTS generating (editor send swallowed, silent
+      // rate-limit banner, stale tab), fail fast instead of polling old text
+      // until the watchdog kicks in.
+      const started = await waitForGenerationStart(provider, previous, prevCount, 25000);
       if (!started) throw new Error("Provider did not start responding (stale tab or rate limit)");
       if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
-
+      const B = window.NemApiBase || {};
       if (B.resetExtractSource) B.resetExtractSource();
       const text = await provider.waitForResponse(previous, prevCount);
       if (window.__NEMAPI_STOP__) throw new Error("Job stopped");
-
-      settled = true;
-      reported = true;
       await chrome.runtime.sendMessage({
         action: "automationResult",
-        jobId: jobId,
+        jobId,
         result: text || "",
         provider: provider.id,
         source: B.getExtractSource ? B.getExtractSource() : null,
-        bridge: B.bridgeReady ? B.bridgeReady() : null,
-        timer: B.timerMode ? B.timerMode() : null,
         partial: !!window.__NEMAPI_LAST_PARTIAL__,
+        bridge: B.bridgeReady ? B.bridgeReady() : null,
       });
     } catch (e) {
-      settled = true;
-      if (reported) return; // the watchdog already answered for this job
-      reported = true;
       try {
         await chrome.runtime.sendMessage({
           action: "automationError",
-          jobId: jobId,
+          jobId,
           provider: provider.id,
-          typed: typed,
-          error: (e && e.message) || String(e),
+          typed,
+          error: e.message || String(e),
         });
       } catch (_) {}
     } finally {
-      settled = true;
-      stopHeartbeat();
       window.__NEMAPI_RUNNING_JOB__ = null;
       rememberFinished(jobId);
       window.__NEMAPI_STOP__ = false;
-      void watchdog;
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     if (msg.action === "runAutomation") {
       runJob(
         msg.jobId,
@@ -391,69 +292,31 @@
       return true;
     }
     if (msg.action === "ping") {
-      const provider = resolveProvider();
+      const p = resolveProvider();
       let hasInput = false;
       try {
-        hasInput = !!(provider && provider.findInput && provider.findInput());
+        hasInput = !!(p && p.findInput && p.findInput());
       } catch (_) {}
-      const B = base();
       sendResponse({
         pong: true,
-        provider: provider ? provider.id : null,
-        hasInput: hasInput,
+        provider: p ? p.id : null,
+        hasInput,
         running: !!window.__NEMAPI_RUNNING_JOB__,
         url: location.href,
-        timer: B.timerMode ? B.timerMode() : null,
-        keepAwake: (B.pageState && B.pageState().keepAwake) || null,
       });
       return true;
     }
     if (msg.action === "probe") {
-      const provider = resolveProvider();
+      const p = resolveProvider();
       sendResponse({
-        provider: provider ? provider.id : null,
-        inputFound: !!(provider && provider.findInput && provider.findInput()),
-        sample: provider && provider.getLastResponse ? (provider.getLastResponse() || "").slice(0, 200) : "",
-        timer: base().timerMode ? base().timerMode() : null,
+        provider: p ? p.id : null,
+        inputFound: !!(p && p.findInput && p.findInput()),
+        sample: p && p.getLastResponse ? (p.getLastResponse() || "").slice(0, 200) : "",
       });
       return true;
     }
     return false;
   });
-
-  // Hold a Web Lock: Chrome documents it as an opt-out of tab freezing
-  // ("Freezing on Energy Saver" ships exactly this exemption). A frozen tab
-  // runs nothing at all, and it is unfrozen only by activating it — the
-  // symptom is a request that hangs until the user looks at the tab.
-  try {
-    const B = base();
-    if (B.keepTabAwake) B.keepTabAwake();
-  } catch (_) {}
-
-  // After a freeze the suspended loops resume where they stopped: the answer
-  // is usually already complete, and the first tick of the wait loop takes it.
-  document.addEventListener("resume", () => {
-    try {
-      chrome.runtime.sendMessage({ action: "extensionLog", message: "tab resumed after a freeze", level: "warn" }).catch(() => {});
-    } catch (_) {}
-  });
-
-  // Report the timer source once per page: "timer" or "message" instead of
-  // "worker" means this page refused the Worker (strict CSP) and the waits are
-  // back to Chrome's throttled timers — worth a warning in the admin log.
-  (async () => {
-    await sleep(2000);
-    const B = base();
-    if (!B.timerMode || !B.pageState) return;
-    const state = B.pageState();
-    try {
-      await chrome.runtime.sendMessage({
-        action: "extensionLog",
-        level: state.timer === "worker" ? "info" : "warn",
-        message: `Tab ready on ${detectProviderId() || "?"}: timers=${state.timer} keepAwake=${state.keepAwake}`,
-      });
-    } catch (_) {}
-  })();
 
   try {
     chrome.runtime.sendMessage({ action: "contentReady" }).catch(() => {});

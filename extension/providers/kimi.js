@@ -172,33 +172,6 @@
     return t;
   }
 
-  /**
-   * Cheap read of one answer — what the polling loops use.
-   *
-   * `readMessageText` clones the DOM and runs htmlToMarkdown (O(answer)); the
-   * poll only needs "did the text move?". Polling the full rebuild also kept
-   * the tab's main thread busy while an answer streamed.
-   */
-  function readCheapText(msgEl) {
-    if (!msgEl) return "";
-    try {
-      return B.cheapText(pickContentRoot(msgEl) || msgEl);
-    } catch (_) {
-      return "";
-    }
-  }
-
-  /** Cheap "is something moving?" probe (bubble count + length of the last one). */
-  function getActivitySignature() {
-    try {
-      const els = getMessageEls();
-      const last = els.length ? els[els.length - 1] : null;
-      return els.length + ":" + (last ? readCheapText(last).length : 0);
-    } catch (_) {
-      return "0:0";
-    }
-  }
-
   function readMessageText(msgEl) {
     if (!msgEl) return "";
     const root = pickContentRoot(msgEl);
@@ -322,38 +295,33 @@
   }
 
   async function waitForResponse(previous = "", prevCount = 0) {
-    // No leading sleep: the loop must see the first tokens, and
-    // waitForGenerationStart already confirmed that the answer started.
+    await B.sleep(500);
     if (B.waitForNewResponse) {
       await B.waitForNewResponse(getMessageEls, readMessageText, {
         timeout: 180000,
         stableMs: 1500,
         previous: prevCount && getResponseCount() > prevCount ? "" : previous,
         newElTimeout: 25000,
-        readCheap: readCheapText,
       });
     } else {
       await B.waitUntilStable(
         () => {
           if (prevCount && getResponseCount() <= prevCount) return "";
-          const cheap = readCheapText(lastOfList(getMessageEls()));
-          if (isGenerating() && !cheap) return "";
-          return cheap;
+          if (isGenerating() && !getLastResponse()) return "";
+          return getLastResponse();
         },
-        { timeout: 180000, stableMs: 1500, previous: "", getFinal: getLastResponse }
+        { timeout: 180000, stableMs: 1500, previous: "" }
       );
     }
-    const last = lastOfList(getMessageEls());
+    const els = getMessageEls();
+    const last = els.length ? els[els.length - 1] : null;
     if (!last) return getLastResponse();
+    await B.sleep(120);
     try {
       return await extractPremium(last);
     } catch (_) {
       return readMessageText(last);
     }
-  }
-
-  function lastOfList(list) {
-    return list && list.length ? list[list.length - 1] : null;
   }
 
   global.NemApiProviders = global.NemApiProviders || {};
@@ -374,8 +342,6 @@
     waitForResponse,
     getLastResponse,
     getResponseCount,
-    getActivitySignature,
-    readCheapText,
     isGenerating,
     findInput,
   };

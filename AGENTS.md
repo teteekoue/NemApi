@@ -81,14 +81,6 @@ Trois entrées typiques : `/v1/chat/completions` (le client),
 5. **Les URL d'image distantes sont refusées** (400 `invalid_image`) :
    l'extension ne doit jamais aller chercher une URL arbitraire avec les
    cookies du fournisseur.
-6. **Aucune attente sur un timer brut de la page.** Un `setTimeout` de page
-   est étouffé à 1 s, puis à 1/min, dès que l'onglet passe en arrière-plan ;
-   un onglet gelé n'exécute plus rien du tout. Toute attente passe par
-   `B.sleep` (Worker dédié, repli `MessageChannel`), et le contenu tient un
-   **Web Lock** pour ne pas être gelé (§4.2).
-7. **Le polling ne fait jamais la conversion markdown.** Il lit le texte brut
-   (`readCheapText` / `getActivitySignature`) ; la conversion tourne **une
-   fois**, à l'acceptation de la réponse (§4.2).
 
 ---
 
@@ -216,43 +208,37 @@ des éléments sans rapport (squelette, image paresseuse) et garde la page
 « occupée » indéfiniment. Chercher le bouton Stop par **préfixe de label**,
 et les spinners **dans** le composer ou dans la dernière réponse.
 
+**Attentes et onglet en arrière-plan (v5.4.1).** Chrome étouffe les timers
+d'une page cachée : 1 s, puis **1 par minute** après cinq minutes en
+arrière-plan dès que la chaîne de timers atteint 5 appels — et une boucle de
+polling *est* une chaîne. Une attente qui demandait 1,5 s de calme se
+réveillait une minute plus tard : la requête prenait 2 à 5 minutes et se
+terminait **instantanément** en revenant sur l'onglet. Chrome peut aussi
+**geler** un onglet caché et silencieux (Energy Saver, > 5 min).
+
+Règle, et rien de plus :
+
+- dans `content.js`, **jamais `setTimeout` directement** : `B.sleep` ;
+- `B.sleep` garde le timer ordinaire quand l'onglet est **visible** (non
+  étouffé, le plus précis, coût nul) ; en arrière-plan il passe par les
+  timers d'un **Worker dédié** (`providers/ticker.js`, non étouffés), sondé
+  (`ping`) avant d'être cru, révoqué après deux réveils manqués, sinon par un
+  rebond `MessageChannel` (le `setTimeout` est armé depuis une tâche
+  *message*, la chaîne ne monte jamais à 5) ;
+- l'onglet tient un **Web Lock** pendant ces attentes (l'opt-out de gel que
+  Chrome documente), et `background.js` pose `autoDiscardable: false` sur les
+  onglets pilotés (la mise en veille mémoire déchargerait le script).
+
+**Ce n'est qu'un changement de source de timer :** la détection, l'extraction
+et les boucles restent celles de la v5.3.1. Une v5.4.0 a voulu tout réécrire
+(lecture bon marché, sondes de démarrage, réinjection conditionnelle, watchdog
+applicatif) : elle a cassé le trajet des jobs — ne pas réintroduire ces
+changements sans les tester sur un vrai fournisseur, onglet **en arrière-plan**.
+
 **Coût de l'extraction :** le polling doit rester **bon marché**. La
 conversion markdown complète (clone DOM + `innerText` + regex) ne doit pas
 tourner à chaque tick : elle coûte en O(longueur de la réponse). Polling sur
 une lecture brute (`readCheapText`), conversion **une fois**, à la fin.
-
-Mesuré sur une réponse de 32 Ko : `cheapText` **0,3 ms** contre
-`htmlToMarkdown` **44 ms**. À 2,5 ticks par seconde, l'ancienne boucle
-brûlait ~110 ms de fil principal **par seconde** sur la page du fournisseur :
-c'est ce qui faisait ramer l'onglet jusqu'à devoir le fermer. Contrat :
-
-- chaque provider exporte `readCheapText` et `getActivitySignature` ;
-- `waitForNewResponse` reçoit `readCheap` (défaut sûr : `textContent`) ;
-- `waitUntilStable` reçoit une lecture bon marché et un `getFinal` qui fait la
-  conversion une seule fois.
-
-**Les attentes doivent survivre à un onglet en arrière-plan (v5.4).** Chrome
-étouffe les timers d'une page cachée : 1 s tout de suite, puis **1 par
-minute** après cinq minutes (intensive wake-up throttling, dès que la chaîne
-de timers atteint 5 — et une boucle de polling *est* une chaîne). Une attente
-qui demandait 1,5 s de calme se réveillait une minute plus tard : la requête
-prenait 2 à 5 minutes et se terminait **instantanément** quand l'utilisateur
-revenait sur l'onglet. Deux protections, dans cet ordre :
-
-1. `providers/ticker.js`, un **Worker dédié** : ses timers ne sont pas
-   étouffés. `base.js:TimerHub` le sonde (`ping`) avant de lui faire
-   confiance, et le met au rancart après deux réveils manqués.
-2. un **rebond `MessageChannel`** : le `setTimeout` est armé depuis une tâche
-   *message*, pas depuis une tâche *timer*, donc le niveau d'imbrication
-   repart à 1 et la condition « chaîne ≥ 5 » n'est jamais remplie (1 s de
-   granularité, au lieu de 60 s).
-
-Chrome peut aussi **geler** un onglet caché et silencieux (Energy Saver,
-> 5 min) : un onglet gelé n'exécute plus rien — ni timer, ni observateur, ni
-gestionnaire de message. L'opt-out documenté est le **Web Lock** :
-`content.js` appelle `B.keepTabAwake()` dès son chargement, et
-`background.js` pose `autoDiscardable: false` pour éviter la mise en veille
-mémoire. Sans ça, la requête ne repart qu'à l'activation de l'onglet.
 
 ### 4.3 Multimodal — les images (v5.1, étendu aux 7 fournisseurs en v5.2)
 
@@ -562,15 +548,7 @@ venv/bin/python -m pytest tests/test_extension_dom.py -q   # extension + Playwri
 venv/bin/python -m pytest tests/test_providers_attachments.py -q   # upload d'image, 7 fournisseurs
 ```
 
-État actuel : **281 tests passés, 0 échec, 0 ignoré**.
-
-`tests/test_extension_timers.py` (v5.4) verrouille les deux invariants de
-latence : le Worker de timers est déclaré dans `web_accessible_resources`
-pour **tous** les hôtes du content script, chaque provider expose sa lecture
-bon marché, et aucune boucle d'attente ne reconstruit le markdown à chaque
-tick. Ses tests de comportement tournent dans un vrai Chromium (monde isolé,
-`ticker.js` servi par `page.route`) ; les contrôles statiques, eux, tournent
-toujours, y compris sans navigateur.
+État actuel : **268 tests passés, 0 échec, 0 ignoré**.
 
 Les tests de l'extension tournent dans un **vrai Chromium** (Playwright) via
 CDP, dans deux mondes : `base.js` dans un monde isolé, `page_bridge.js`
@@ -645,23 +623,11 @@ de version cassait le build à chaque fois.
 - `proxy/data/` (config, stats, sessions) est **non versionné** : c'est l'état
   de la machine, pas du code. Vider `sessions.json` remet le contexte à zéro.
 - Un `MutationObserver` sur toute la page est coûteux : observer un
-  sous-arbre, jamais `document`. (`base.js:sleepOrChange` en crée un de façon
-  éphémère, le temps d'une attente, uniquement pour être réveillé par un
-  changement de la page : c'est lui qui remplace le polling à cadence fixe.)
-- **Ne jamais `setTimeout` directement dans `content.js`** : passer par
-  `B.sleep`. Un timer brut retombe dans les paliers de Chrome (1 s, puis
-  1/min) et ramène le bug « ça se débloque quand je regarde l'onglet ».
-- **Ne pas réinjecter les scripts à chaque job** : `routerAlive()` (un `ping`)
-  décide. Une réinjection ré-exécute ~100 Ko de JavaScript dans la page et
-  réinstalle les écouteurs ; après un rechargement de l'extension les anciens
-  scripts sont orphelins, et c'est justement le `ping` qui échoue.
-- `chrome.alarms` a une période minimale (30 s sur Chrome récent, 1 min
-  avant) : l'alarme n'est qu'un filet de sécurité pour relancer la boucle de
-  poll, jamais le mécanisme de latence.
-- La boucle de poll n'attend plus `reportTabs()` / `pullConfig()` devant le
-  long-poll (deux allers-retours qui retardaient la distribution du job
-  suivant). L'ordre *rapport des onglets puis configuration* reste nécessaire
-  à l'auto-configuration : c'est `acceptJob()` qui refait les deux appels
-  quand le provider n'a pas encore d'onglet, **avant** d'échouer le job.
+  sous-arbre, jamais `document`.
+- **Ne jamais ajouter un `setTimeout` brut dans `content.js`** : `B.sleep`
+  seul sait choisir une source de timer que Chrome n'étouffe pas (§4.2).
+- Le Worker `providers/ticker.js` doit rester dans `web_accessible_resources`
+  pour **tous** les hôtes du content script, sinon `new Worker()` échoue et
+  les attentes retombent dans les paliers de Chrome.
 - `api.github.com` et `grep.app` sont **rate-limités** depuis cette machine ;
   `lite.duckduckgo.com/lite/?q=` et `raw.githubusercontent.com` fonctionnent.

@@ -55,17 +55,6 @@ async def job_result(body: JobResult, ctx: AppContext = Depends(get_ctx)):
     )
     if action == "result":
         level, detail = "info", f"{len(body.result or '')} chars"
-        if body.timer and body.timer != "worker":
-            # Diagnostics of the hidden-tab fix: the content script waits on a
-            # Worker when it can. "message"/"timer" means the tab is in Chrome's
-            # throttled tiers (1 s / 1 min between wake-ups) — the wait loops
-            # then still work, but a background tab has to be reloaded to pick
-            # up the Worker (the extension was reloaded after the tab).
-            ctx.logs.add(
-                f"Extension timer source = {body.timer} (Worker unavailable in this tab: "
-                "reload the provider tab to get unthrottled waits)",
-                "warn",
-            )
         if body.partial:
             ctx.logs.warn(f"Job {str(body.jobId)[:8]}: the extension stopped waiting before the answer ended")
         if body.source or body.bridge is not None:

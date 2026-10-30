@@ -47,10 +47,6 @@ class JobResult(_Lenient):
     source: Optional[str] = None
     bridge: Optional[bool] = None
     partial: Optional[bool] = None  # the extension stopped waiting before the answer ended
-    # timer source of the content script while it waited ("worker" = not
-    # affected by Chrome's background-tab throttling, "message" = chain reset
-    # through a MessageChannel, "timer" = plain setTimeout)
-    timer: Optional[str] = None
 
 
 class ExtensionLog(_Lenient):

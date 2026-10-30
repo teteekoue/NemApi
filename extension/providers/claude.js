@@ -104,9 +104,7 @@
         const hasBody = el.querySelector(
           ".standard-markdown, [class*='prose'], [class*='markdown'], pre, code, p"
         );
-        // textContent, not innerText: innerText forces a layout, and this
-        // runs on every cheap poll while an answer streams.
-        const len = (el.textContent || "").length;
+        const len = (el.innerText || "").length;
         if (hasBody && len > 30) return el;
         el = el.parentElement;
       }
@@ -204,29 +202,6 @@
   }
 
   /**
-   * Cheap read of the current answer — what the polling loops use.
-   *
-   * `getLastResponse()` rebuilds the whole markdown (clone, math restore,
-   * per-`<pre>` fences, htmlToMarkdown = O(answer)). Polling it every 400 ms
-   * burned the tab's main thread for the whole duration of an answer and made
-   * the page feel slow; the poll only needs "did the text move?".
-   */
-  function readCheapText(el) {
-    const root = el || getLastAssistantRoot();
-    return B.cheapText ? B.cheapText(root) : "";
-  }
-
-  /** Cheap "is something moving?" probe (turn count + length of the last one). */
-  function getActivitySignature() {
-    try {
-      const root = getLastAssistantRoot();
-      return getResponseCount() + ":" + (root ? readCheapText(root).length : 0);
-    } catch (_) {
-      return "0:0";
-    }
-  }
-
-  /**
    * Is the model still streaming?
    *
    * Strict and local on purpose: a false positive is not free (the proxy
@@ -305,16 +280,16 @@
   }
 
   async function waitForResponse(previous = "") {
-    // No leading sleep: the answer may already be streaming when the job is
-    // dispatched, and the loop below sees it on its first tick.
+    await B.sleep(1000);
     await B.waitUntilStable(
       () => {
-        const cheap = readCheapText();
-        if (isGenerating() && !cheap) return "";
-        return cheap;
+        if (isGenerating() && !getLastResponse()) return "";
+        return getLastResponse();
       },
-      { timeout: 180000, stableMs: 2500, previous, getFinal: getLastResponse }
+      { timeout: 180000, stableMs: 2500, previous }
     );
+    // Small delay so action-bar-copy is mounted after stream ends
+    await B.sleep(300);
     try {
       return await extractPremium();
     } catch (_) {
@@ -347,8 +322,6 @@
     waitForResponse,
     getLastResponse,
     getResponseCount,
-    getActivitySignature,
-    readCheapText,
     isGenerating,
     findInput,
   };
