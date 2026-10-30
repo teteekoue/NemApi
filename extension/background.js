@@ -317,6 +317,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       postResult(msg.jobId, "result", msg.result, undefined, { source: msg.source, bridge: msg.bridge, partial: msg.partial });
       extensionLog(`Job ${msg.jobId} completed on ${provider}`);
     }
+    // The worker is awake right now: fetch the next queued job at once
+    // instead of waiting for the alarm (up to 30 s of dead time between two
+    // requests — the gap seen in the log between "OK" and "Starting job").
+    if (!pollInFlight) schedule(0);
     sendResponse({ ok: true });
     return true;
   }
@@ -329,6 +333,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       postResult(msg.jobId, "error", msg.error, msg.typed);
       extensionLog(`Job ${msg.jobId} failed on ${provider || "?"}: ${msg.error}`, "error");
     }
+    if (!pollInFlight) schedule(0);
     sendResponse({ ok: true });
     return true;
   }

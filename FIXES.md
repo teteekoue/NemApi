@@ -687,3 +687,73 @@ vérifie que le Worker est déclaré, que `base.js` délègue son `sleep`, qu'au
 timer brut ne subsiste dans `content.js`, et que les sept fournisseurs n'ont
 pas bougé. Ses tests de comportement demandent Chromium (comme les autres
 tests DOM du projet).
+
+## 15. v5.4.2 — Les 20 secondes perdues entre deux requêtes, et le premier envoi d'un agent (2026-10-30)
+
+Mesuré sur un journal réel (DeepSeek, deux clients) :
+
+| Trajet | Ce qui se passait | Après |
+|---|---|---|
+| Némésis, prompt de 27 c | 22 s entre « job queued » et « Starting job » | ~0 s |
+| Qwen Code, prompt de 95 KB | 160 s puis `Provider did not start responding` | envoi en quelques secondes, puis attente de la réponse |
+
+### 1. Les 22 s entre deux requêtes
+
+Trois trous, tous dans le chemin entre le proxy et le premier caractère tapé :
+
+- `JobManager.take_wait` vidait son événement de réveil **après** avoir regardé
+  les files : un job créé entre les deux était manqué et le long-poll dormait
+  ses 20 s complètes, pendant qu'une requête attendait. L'événement est
+  maintenant vidé **avant**.
+- `background.js` attendait l'alarme (30 s) pour retenter un poll quand le
+  service worker s'était endormi entre deux jobs. Un résultat (ou une erreur)
+  réveille désormais la boucle **immédiatement** : `schedule(0)`.
+- l'extension est réveillée par `chrome.runtime.onInstalled`/`onStartup`, donc
+  un rechargement d'extension ne laisse plus la boucle arrêtée.
+
+### 2. Le premier envoi d'un agent (Qwen Code)
+
+`sendPrompt` de DeepSeek tentait **8 fois par compositeur, sur 3 compositeurs**,
+avec deux écritures et 2,5 s d'attente du bouton à chaque tour : jusqu'à deux
+minutes de sommeil avant d'abandonner, et une erreur trompeuse à la fin. Et
+l'écriture d'un prompt de 95 KB passait par `execCommand("insertText")`, que
+chaque éditeur re-rend.
+
+- échelle ramenée à **3 tentatives** et une seule écriture par tentative ;
+- un prompt de plus de 8 000 caractères est écrit **en une fois** (setter natif
+  + un événement `input`), plus par le pipeline d'insertion ;
+- l'attente de fin d'upload ne s'exécute **que si un fichier a été joint**
+  (elle scannait toute la page à chaque envoi) ;
+- la détection de démarrage compare enfin **deux mesures comparables** : la
+  signature d'activité d'avant l'envoi avec celle d'après (avant, une signature
+  `« 12:340 »` était comparée au markdown de la réponse précédente — donc
+  jamais égale) ;
+- fenêtre de démarrage portée à **90 s** : un site qui préremplit 100 KB de
+  contexte n'est pas « bloqué » ;
+- si le compositeur garde le texte, l'échec est immédiat et **explicite**
+  (« the page kept the message (N chars) ») au lieu d'attendre 25 s puis
+  d'accuser le fournisseur ; si le compositeur est vide, on continue d'attendre
+  la réponse.
+
+### 3. Un robot périmé dans l'onglet
+
+Un content script survit au rechargement de l'extension, mais son
+`chrome.runtime` est mort : il ne peut plus rien rapporter et garde pourtant
+`__NEMAPI_RUNNING_JOB__`. `content.js` porte désormais une **version** : une
+réinjection de la même version ne démarre pas un second routeur, une version
+**plus récente** prend la main (le routeur orphelin, lui, ne reçoit plus de
+message).
+
+### 4. Une ligne de mesure par job
+
+Le journal du proxy reçoit maintenant, à chaque requête :
+
+```
+Timing 0dff905d (deepseek): typed 1.2s, start 0.8s, answer 17.4s, 42 chars
+```
+
+Envoi, démarrage, génération : une requête lente est attribuable d'un coup
+d'œil, sans campagne de logs.
+
+Résultat : **216 tests passent, 0 échec** (4 contrôles statiques ajoutés à
+`tests/test_extension_timers.py`).

@@ -469,7 +469,15 @@
     // 3) textarea / input. A native insertion is the most compatible form:
     //    it bypasses React's value tracker (a plain `el.value = x` updates
     //    the tracker too, and React then sees "no change" and drops it).
-    if (!el.disabled && !el.readOnly) {
+    //
+    //    But NOT for a very large prompt: an agent sends 90 to 120 KB on its
+    //    first turn, and `execCommand("insertText")` feeds it to the editor's
+    //    input handlers, which re-render the controlled field on every
+    //    insertion — the write then takes minutes (the "first request takes
+    //    3 to 5 minutes" report). Above this size the field is written once,
+    //    through the native setter below, then a single `input` event.
+    const big = value.length > 8000;
+    if (!el.disabled && !el.readOnly && !big) {
       clearNativeValue(el);
       placeCaretEnd(el);
       if (insertTextNative(el, value) && editorText(el).trim() === value.trim()) {
@@ -486,8 +494,11 @@
       if (desc && desc.set) desc.set.call(el, v);
       else el.value = v;
     };
-    setVal("");
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+    if (!big) {
+      // make React see a change (it compares with its own tracker)
+      setVal("");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
     setVal(value);
     try {
       el.dispatchEvent(
@@ -2848,7 +2859,7 @@
    * @deprecated use waitUploadFinished(): it also PROVES that the app took
    * the file instead of assuming a quiet area.
    */
-  async function waitForUploadSettled({ timeout = 90000, stableMs = 1800, pollMs = 300 } = {}) {
+  async function waitForUploadSettled({ timeout = 20000, stableMs = 1800, pollMs = 300 } = {}) {
     const t0 = Date.now();
     let last = null;
     let stableSince = Date.now();

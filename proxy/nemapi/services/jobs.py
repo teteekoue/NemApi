@@ -202,13 +202,17 @@ class JobManager:
         while True:
             if is_disconnected is not None and await is_disconnected():
                 return None
+            # Clear BEFORE looking at the queues. Clearing afterwards lost a job
+            # created in between: the long-poll then slept its whole window
+            # (up to 20 s) while a request was waiting for it — a 20 s hole in
+            # front of the browser, at random, on every second request.
+            self._wakeup.clear()
             job = self.take()
             if job:
                 return job
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            self._wakeup.clear()
             try:
                 await asyncio.wait_for(self._wakeup.wait(), timeout=min(remaining, poll))
             except asyncio.TimeoutError:

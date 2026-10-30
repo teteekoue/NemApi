@@ -1,10 +1,15 @@
-# NemApi v5.4.1
+# NemApi v5.4.2
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+**Correctifs v5.4.2 — la latence entre deux requêtes et le premier envoi d'un agent :**
+- ✅ **Plus de trou de 20 s** entre deux requêtes : l'événement de réveil du long-poll est vidé avant l'inspection des files, et un résultat réveille la boucle de poll immédiatement (au lieu d'attendre l'alarme de 30 s)
+- ✅ **Le premier envoi de Qwen Code (95 KB)** : l'échelle de tentatives d'écriture passe de 8 × 3 compositeurs à 3, un gros prompt est écrit **en une fois**, l'attente d'upload ne tourne que s'il y a un fichier, et la détection de démarrage compare deux mesures comparables — avec 90 s de fenêtre pour un site qui préremplit un gros contexte
+- ✅ **Une ligne `Timing` par requête** dans le journal (envoi / démarrage / génération) : une requête lente est attribuable d'un coup d'œil
 
 **Correctifs v5.4.1 — l'onglet en arrière-plan :**
 - ✅ **La requête qui « se débloque » quand on regarde l'onglet** : Chrome étouffe les timers d'un onglet caché (1 s, puis **1 par minute** après cinq minutes) et peut **geler** un onglet silencieux. Les attentes passent désormais par les timers d'un **Worker dédié** (non étouffés), avec repli `MessageChannel`, et l'onglet tient un **Web Lock** (l'opt-out de gel documenté). Un onglet **visible** garde son timer ordinaire : rien ne change pour le cas courant

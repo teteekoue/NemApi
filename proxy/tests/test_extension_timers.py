@@ -87,6 +87,46 @@ def test_the_providers_are_untouched_by_this_release():
         assert "async function waitForResponse" in source, name
 
 
+def test_the_job_start_check_compares_like_with_like():
+    """A signature compared with a markdown previous answer proves nothing."""
+    source = (EXT / "content.js").read_text()
+    assert "prevSig" in source, "the pre-send activity signature is not captured"
+    # the comparison must use prevSig, with the old text only as a fallback
+    assert "prevSig ? cur !== prevSig : cur !== prev" in source
+    # a page that is only slow to prefill must not be failed on a guess
+    assert "promptStillInComposer" in source
+    assert "__NEMAPI_START_TIMEOUT_MS__" in source  # overridable for the tests
+    # an old router left in the tab by an extension reload must be replaced
+    assert "CS_VERSION" in source
+
+
+def test_a_large_prompt_is_written_once_and_not_retried_forever():
+    """A 100 KB prompt is one DOM write; the retry ladder stays short."""
+    base = (PROVIDERS / "base.js").read_text()
+    assert "const big = value.length > 8000;" in base
+    deepseek = (PROVIDERS / "deepseek.js").read_text()
+    assert "attempt <= 3" in deepseek, "the send ladder can still sleep for minutes"
+    # the upload wait only runs when a file was really attached
+    assert "pendingUploads" in deepseek
+
+
+def test_the_long_poll_clears_its_wakeup_before_looking_at_the_queues():
+    """Clearing it after the scan lost a job created in between (up to 20 s)."""
+    jobs = (ROOT / "proxy" / "nemapi" / "services" / "jobs.py").read_text()
+    body = jobs[jobs.index("async def take_wait"):]
+    body = body[: body.index("async def ", 10)]
+    clear = body.index("self._wakeup.clear()")
+    take = body.index("job = self.take()")
+    assert clear < take, "the wakeup must be cleared BEFORE the queue is inspected"
+
+
+def test_a_finished_job_wakes_the_poller():
+    source = (EXT / "background.js").read_text()
+    # after a result/error, ask for the next job at once instead of waiting
+    # for the 30 s alarm
+    assert source.count("if (!pollInFlight) schedule(0);") >= 2
+
+
 def test_extension_javascript_parses():
     node = shutil.which("node")
     if not node:
