@@ -11,6 +11,7 @@ empaquetée*), sans avoir à extraire tout le dépôt.
 | Fichier | Version | Commit |
 |---|---|---|
 | `NemApi-v5.3.1-extension.zip` | v5.3.1 (stable de référence) | `1b3881e` |
+| `NemApi-v5.6.4-extension.zip` | v5.6.4 (correctif « le prompt disparaît ») | `v5.6.4` |
 
 Régénérer l'archive d'une version :
 
