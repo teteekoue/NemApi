@@ -107,6 +107,22 @@ convient qu'à un seul d'entre eux :**
 `base.js:setTextareaValue` distingue ces cas ; `base.js:sendWithProof`
 essaie chaque surface candidate jusqu'à ce qu'une prenne le texte.
 
+**La comparaison du compositeur porte sur le CONTENU, à toute taille**
+(`base.js:composerMatches`) : exact, puis tous les blancs retirés, puis les
+mots. Un éditeur riche (Lexical, ProseMirror) rend une ligne vide comme **deux**
+retours à la ligne ; une comparaison caractère par caractère dit alors « le site
+a effacé le texte » sur un texte présent, l'adaptateur vide et retape, et le job
+échoue — c'est le « le prompt est saisi et il disparaît » de la v5.6.4, sur un
+prompt d'agent de 17 562 caractères alors qu'un prompt d'une ligne passait. Le
+seuil de 4 000 caractères de la v5.6.2 était le mauvais critère : un prompt de
+3 KB remis en forme échouait aussi. Ce qui doit rester refusé : un brouillon
+résiduel (mots en plus) et une troncature (mots en moins).
+
+**Un bouton d'envoi qui reste désactivé ne veut pas dire « le texte est perdu »** :
+son activation suit l'état de l'application, qui retarde d'autant plus que le
+prompt est long. On garde le texte, on essaie **Entrée**, et on ne réécrit
+jamais — une réécriture est un effacement visible.
+
 **Une surface n'est écrite qu'une fois** (`attempts: 1`) : réécrire le prompt à
 chaque tentative produisait la boucle signalée sur Kimi — le texte apparaissait,
 disparaissait, revenait, sans jamais partir, parce que le sélecteur d'envoi avait

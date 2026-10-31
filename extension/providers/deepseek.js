@@ -643,12 +643,16 @@
     if (!target) return false;
     const dom = editorText(target);
     const text = String(want || "");
-    // a 150 KB prompt is compared on its normalised form: the editor rewrites
-    // newlines and NBSP, and an exact check says "wiped" forever
-    if (text.length > 4000 && B.composerMatches) return B.composerMatches(dom, text);
-    if (!B.textMatches(dom, want)) return false;
+    // Compare the CONTENT, at every size: the editor reflows what it is given
+    // (a paragraph per line, so a blank line is read back as two), and an
+    // exact check then says "wiped" about a text that is perfectly there. That
+    // wrong verdict is what made the provider wipe the composer and type the
+    // prompt again — the "it is written and it disappears" of a 17 KB agent
+    // prompt, while a one-line 127-character prompt went through.
+    const match = B.composerMatches || B.textMatches;
+    if (!match(dom, text)) return false;
     const react = B.readReactValue(target);
-    return react === null || B.textMatches(react, want);
+    return react === null || match(react, text);
   }
 
   /**
@@ -670,39 +674,57 @@
     const want = String(text || "").trim();
     const target = el || findInput();
     if (!target) return null;
-    // 3 attempts, not 8: with two editions in each and a 2.5 s wait for the
-    // send control, the old ladder could sleep for two minutes on a page that
-    // never enables it, before trying the next editor (three of them).
-    //
-    // A very large prompt gets ONE attempt: typing 150 KB takes seconds, and
-    // redoing it in a loop is what the user sees as "the text appears and
-    // disappears without being sent".
-    const attempts = want.length > 40000 ? 1 : 3;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const written = await B.writeAndConfirm(() => target, text, {
+    const holds = () => composerHolds(want, target);
+
+    // Write ONCE. A second write happens only when the composer is EMPTY (a
+    // real wipe, e.g. the end of an upload) — never when it already holds the
+    // prompt: re-typing a prompt that is there is the loop the user sees as
+    // "the text appears, disappears, comes back".
+    let written = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      if (holds()) {
+        written = target;
+        break;
+      }
+      written = await B.writeAndConfirm(() => target, text, {
         attempts: 1,
         log: (m) => log(m),
       });
-      if (!written) {
-        await B.sleep(250);
-        continue;
-      }
-      const btn = await waitForEnabledSend(written, 2500);
-      if (!btn || isDisabled(btn) || !isVisible(btn)) {
-        log(`attempt ${attempt}: the send control stayed disabled (the app wiped the text)`);
-        await B.sleep(250);
-        continue;
-      }
-      // the app took it — make sure it is not wiped a moment later
-      await B.sleep(700);
-      if (!composerHolds(want, written)) {
-        log(`attempt ${attempt}: the text was wiped after being accepted, retrying`);
-        continue;
-      }
-      log(`editor holds ${editorText(written).length}c (want ${want.length}c) → send enabled`);
-      return { input: written, btn };
+      if (written || holds()) break;
+      await B.sleep(250);
     }
-    return null;
+    // the editor may have taken the text while the confirmation was reading a
+    // half-committed value (a rich editor inserts in several frames)
+    if (!written && holds()) written = target;
+    if (!written) return null;
+
+    // The send control follows the APP's state, which lags behind the DOM —
+    // and the longer the prompt, the longer the lag: a 17 562-character prompt
+    // needed more than the 2.5 s of the old budget, and the old code concluded
+    // "the app wiped the text", wiped it for real and typed it again. Budget
+    // grows with the prompt, bounded.
+    const budget = Math.min(20000, 3000 + Math.round(want.length / 4));
+    const found = await waitForEnabledSend(written, budget);
+    const usable = !!(found && !isDisabled(found) && isVisible(found));
+
+    // the app took it — make sure it is not wiped a moment later
+    await B.sleep(usable ? 700 : 200);
+    if (!holds()) {
+      log("the text was wiped after the write (the app restored its own state)");
+      return null;
+    }
+    if (!usable) {
+      // A send control that stays disabled does NOT mean the text is lost:
+      // the composer still holds it. Keep it and let the caller press Enter —
+      // DeepSeek sends on Enter — instead of wiping and retyping.
+      log(
+        `no usable send control after ${budget} ms (found=${found ? "yes" : "no"}) ` +
+          "→ keeping the text, Enter fallback"
+      );
+    } else {
+      log(`editor holds ${editorText(written).length}c (want ${want.length}c) → send enabled`);
+    }
+    return { input: written, btn: usable ? found : null };
   }
 
   async function sendPrompt(text) {
@@ -750,7 +772,7 @@
         } catch (_) {}
       }
     }
-    if (!input || !btn) {
+    if (!input) {
       // The last editor may already hold the prompt even though our
       // confirmation failed (normalisation, or the site truncated it): send it
       // rather than clearing everything and starting over a fourth time.
@@ -761,7 +783,7 @@
         btn = findSend(last);
       }
     }
-    if (!input || !btn) {
+    if (!input) {
       const last = lastTried || findInput();
       let r = last && B.composerReport ? B.composerReport(editorText(last), want) : null;
       // the composer may have been emptied by a retry: keep what we measured
@@ -771,18 +793,18 @@
           (r.truncated
             ? ", the site truncated it — this prompt is too large for this composer"
             : ", first difference at " + r.firstDiff) +
-          ")"
+          `, editors=${cands.length}, send=${findSend(last) ? "found" : "none"})`
         : "";
       throw new Error(
         "DeepSeek: the prompt could not be written into the composer" + detail
       );
     }
 
-    // 3) Click the send control.
+    // 3) Click the send control (when the page has given us a usable one).
     try {
-      btn.focus();
+      btn && btn.focus();
     } catch (_) {}
-    if (B.clickEl(btn)) {
+    if (btn && B.clickEl(btn)) {
       // Verify that the message was accepted (the composer is cleared)
       await B.sleep(400);
       if (!want || !composerHolds(want, input)) return; // success

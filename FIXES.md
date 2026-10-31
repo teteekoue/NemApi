@@ -1117,3 +1117,80 @@ d'un échec silencieux.
   `node`/`jsdom` absents) et vérifie que les sélecteurs de DeepSeek restent
   seuls.
 - Suite complète : **240 tests passés, 6 ignorés**.
+
+## 21. v5.6.4 — Le prompt est saisi et il disparaît (DeepSeek, 17 562 caractères) (2026-10-31)
+
+### Le symptôme
+
+```
+09:31:55 Completion → deepseek/deepseek-chat stream=False tools=0 prompt=1122c
+          Job 1fa9b385 OK: 579 chars                     ← passe
+09:32:03 Completion → deepseek/deepseek-chat stream=False tools=0 prompt=17562c
+          Job 56a7967a error: DeepSeek: the prompt could not be written into the
+          composer (the page keeps clearing it)           ← trois fois de suite
+```
+
+Le prompt de 1 122 caractères passait, celui de 17 562 non, sur la **même
+page**, une seconde plus tard. À l'écran : le texte apparaît, disparaît,
+revient, et rien ne part. La version stable v5.5.0 est concernée — la régression
+ne vient donc pas de v5.6.x.
+
+### Les deux causes
+
+**1. La comparaison lisait le compositeur comme un fichier texte.**
+`writeAndConfirm` (base.js) validait l'écriture si `editorText(el) === text`.
+DeepSeek utilise un éditeur riche (Lexical) : chaque ligne devient un
+paragraphe, donc une **ligne vide** se relit comme **deux** retours à la ligne
+(`<p>a</p><p></p><p>b</p>` → `a\n\n\nb` une fois mis bout à bout). Un prompt
+d'agent est plein de lignes vides — titres, listes, blocs de code — et un prompt
+de 17 562 caractères en comptait des centaines. La comparaison échouait sur un
+texte **présent**, l'adaptateur en concluait « le site a effacé le texte »,
+**vidait le compositeur et retapait les 17 562 caractères**, puis échouait.
+
+C'est ce qui explique le seuil apparent : un prompt d'une seule ligne (127
+caractères) n'a aucune ligne vide, donc aucune divergence.
+
+**2. Un bouton d'envoi jugé en 2,5 s, et un verdict fatal.**
+`typePrompt` attendait ensuite le bouton d'envoi pendant 2 500 ms fixes. Ce
+bouton suit l'état de l'application, qui commute d'autant plus tard que le
+prompt est long. Au-delà du délai, le code concluait « le bouton est resté
+désactivé (l'application a effacé le texte) » et **recommençait l'écriture** :
+trois cycles, trois effacements — le clignotement — puis l'erreur.
+
+### Le correctif
+
+- `base.js:composerMatches` — la comparaison porte sur le **contenu**, à toute
+  taille (le seuil de 4 000 caractères disparaît : il refusait aussi un prompt
+  de 3 KB simplement remis en forme) :
+  1. exact ;
+  2. puis tous les blancs retirés ;
+  3. puis, au-delà de 2 000 caractères, les **mots** : rien de perdu
+     (`wordsA.length >= wordsB.length`), rien d'ajouté au-delà de 2 % + 8 mots,
+     et chaque mot du prompt présent **dans l'ordre**. Une troncature perd la
+     fin, un brouillon résiduel ajoute des mots : les deux restent refusés.
+- `deepseek.js:composerHolds` — même comparaison à toute taille (avant, la
+  comparaison tolérante n'était utilisée qu'au-delà de 4 000 caractères).
+- `deepseek.js:typePrompt` — écriture **unique** ; une seconde écriture
+  seulement si le compositeur est **vide** (un vrai effacement, par exemple à
+  la fin d'un upload) ; l'attente du bouton d'envoi grandit avec le prompt
+  (`min(20 s, 3 s + chars / 4)`) ; un bouton qui reste désactivé **ne fait plus
+  réécrire** : le texte est gardé et l'envoi continue par **Entrée**.
+- `deepseek.js:sendPrompt` — un bouton absent n'est plus une erreur : les
+  replis (Entrée, puis clic) s'appliquent au texte déjà écrit ; le message
+  d'échec donne les chiffres (`composer 18216c, wanted 17562c, first difference
+  at 22, editors=1, send=none`).
+
+### Vérifications
+
+- `proxy/tests/js/deepseek_composer.mjs` (nouveau, jsdom) rejoue **le vrai**
+  `deepseek.js` sur une page dont le compositeur se comporte comme celui de
+  DeepSeek : texte remis en forme, et **bouton d'envoi qui arrive en retard**
+  (120 ms pour 127 caractères, 3,2 s pour 17 KB, 6 s pour le scénario extrême).
+  Trois tailles de prompt (127, 1 122, 17 562) : message envoyé, entier, avec
+  **une seule écriture**. Une troncature est refusée avec ses chiffres, une
+  page qui ignore l'écriture échoue une fois, sans retaper.
+- **Le même harnais sur la v5.5.0** (les fichiers de `1b3881e` extraits avec
+  `git show`) rend **les 8 erreurs**, avec exactement le message du rapport :
+  `DeepSeek: the prompt could not be written into the composer (the page keeps
+  clearing it)`. La reproduction est donc fidèle, pas une reconstitution.
+- Suite complète : **242 tests passés, 6 ignorés**.

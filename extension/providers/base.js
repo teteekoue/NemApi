@@ -521,11 +521,36 @@
     const a = normalizeComposer(observed);
     const b = normalizeComposer(want);
     if (a === b) return true;
-    // Below this size the exact comparison is the right one (a leftover draft
-    // must never be accepted); above it, no editor round-trips whitespace
-    // faithfully and the check must be about the CONTENT.
-    if (String(want ?? "").length <= 4000) return false;
-    return compactComposer(a) === compactComposer(b);
+    // No editor round-trips whitespace faithfully — and not only for huge
+    // prompts: a Lexical editor (DeepSeek) renders every blank line as an
+    // empty <p>, so `innerText` reads it back with TWO newlines where the
+    // prompt had one. A 17 562-character agent prompt (5.8 % blank lines) then
+    // never matched, `writeAndConfirm` re-typed it, and the caller concluded
+    // "the page keeps clearing it" — the 09:32 loop of the report. The same
+    // happened for a 3 KB prompt: the threshold below 4 000 characters was
+    // simply wrong.
+    //
+    // What must still be refused is a LEFTOVER DRAFT or a TRUNCATION. So the
+    // text is compared on its content only (every whitespace dropped) and, if
+    // that differs, on its words: a real draft adds words, a truncation loses
+    // the end — neither is accepted.
+    if (compactComposer(a) === compactComposer(b)) return true;
+    // A SHORT text must match on its content, exactly: a leftover draft has to
+    // be refused, and "hello there" is not "hello world".
+    if (b.length < 2000) return false;
+    // Then on its words: an editor may also insert a marker (a bullet, a
+    // space) or merge two characters. Nothing may be LOST, nothing may be
+    // ADDED beyond a little layout, and every word of the prompt must appear,
+    // in order — a truncation loses the end, a draft adds words.
+    const wordsA = a.split(/\s+/).filter(Boolean);
+    const wordsB = b.split(/\s+/).filter(Boolean);
+    if (!wordsB.length || wordsA.length < wordsB.length) return false;
+    if (wordsA.length > wordsB.length * 1.02 + 8) return false;
+    let j = 0;
+    for (const word of wordsA) {
+      if (j < wordsB.length && word === wordsB[j]) j += 1;
+    }
+    return j === wordsB.length;
   }
 
   /** Why a write failed, in numbers — logged and shown to the caller. */

@@ -1,10 +1,17 @@
-# NemApi v5.6.3
+# NemApi v5.6.4
 
 **Passerelle locale compatible OpenAI** pour DeepSeek, Qwen, Claude, Gemini, ChatGPT, Kimi et Z.ai. Elle pilote l'interface web de chaque fournisseur via une extension navigateur Chromium (DOM).
 
 > Port officiel : **8090** → `http://127.0.0.1:8090/v1`
 >
 > Navigateur : **Chromium / Chrome 103+** (validé sur Chrome 103 et 155).
+
+## v5.6.4 — « le prompt est saisi et il disparaît » : la comparaison du compositeur
+
+- ✅ **`DeepSeek: the prompt could not be written into the composer (the page keeps clearing it)`** sur un prompt d'agent de 17 562 caractères, alors qu'un prompt de 127 et un de 1 122 passaient une seconde plus tôt sur la même page. La cause n'était pas l'écriture mais la **relecture** : l'extension comparait le compositeur **caractère par caractère**. Un éditeur riche (Lexical, celui de DeepSeek) transforme chaque ligne en paragraphe, donc une ligne vide se relit comme **deux** retours à la ligne ; un prompt d'agent en est plein (titres, listes, blocs de code). La comparaison jugeait donc « le site a effacé le texte » sur un texte parfaitement présent, l'adaptateur **vidait le compositeur et retapait tout** — le texte apparaît, disparaît, revient — puis le job échouait. La comparaison porte maintenant sur le **contenu** à toute taille : tous les blancs retirés, puis, si besoin, les **mots** (rien de perdu, rien d'ajouté, ordre conservé). Un brouillon résiduel et une troncature restent refusés
+- ✅ **Le prompt n'est plus réécrit trois fois** : une seconde écriture n'a lieu que si le compositeur est **vide** (un vrai effacement). Le « bouton d'envoi encore désactivé » ne veut pas dire « le texte est perdu » : le texte est **gardé**, et l'envoi continue par **Entrée**
+- ✅ **Le bouton d'envoi a le temps d'arriver** : son activation suit l'état de l'application, qui retarde d'autant plus que le prompt est long (plus de 2,5 s pour 17 KB). Le délai d'attente grandit avec le prompt (borné à 20 s) au lieu d'être fixe
+- ✅ **L'échec est chiffré** : `composer 18216c, wanted 17562c, first difference at 22, editors=1, send=none`
 
 ## v5.6.3 — Kimi ne colle plus la requête en boucle, et DeepSeek obéit au format d'outils
 
