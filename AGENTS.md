@@ -107,6 +107,31 @@ convient qu'à un seul d'entre eux :**
 `base.js:setTextareaValue` distingue ces cas ; `base.js:sendWithProof`
 essaie chaque surface candidate jusqu'à ce qu'une prenne le texte.
 
+**La comparaison du compositeur porte sur le CONTENU, à toute taille**
+(`base.js:composerMatches`) : exact, puis tous les blancs retirés, puis les
+mots. Un éditeur riche (Lexical, ProseMirror) rend une ligne vide comme **deux**
+retours à la ligne ; une comparaison caractère par caractère dit alors « le site
+a effacé le texte » sur un texte présent, l'adaptateur vide et retape, et le job
+échoue — c'est le « le prompt est saisi et il disparaît » de la v5.6.4, sur un
+prompt d'agent de 17 562 caractères alors qu'un prompt d'une ligne passait. Le
+seuil de 4 000 caractères de la v5.6.2 était le mauvais critère : un prompt de
+3 KB remis en forme échouait aussi. Ce qui doit rester refusé : un brouillon
+résiduel (mots en plus) et une troncature (mots en moins).
+
+**Un bouton d'envoi qui reste désactivé ne veut pas dire « le texte est perdu »** :
+son activation suit l'état de l'application, qui retarde d'autant plus que le
+prompt est long. On garde le texte, on essaie **Entrée**, et on ne réécrit
+jamais — une réécriture est un effacement visible.
+
+**Une surface n'est écrite qu'une fois** (`attempts: 1`) : réécrire le prompt à
+chaque tentative produisait la boucle signalée sur Kimi — le texte apparaissait,
+disparaissait, revenait, sans jamais partir, parce que le sélecteur d'envoi avait
+vieilli et que rien ne cherchait le bouton autrement. Quand aucun sélecteur ne
+matche, `discoverSend(near)` cherche **le petit élément cliquable** au bas du
+compositeur et `pressEnter(el)` essaie **Entrée** (beaucoup de sites envoient
+ainsi) ; `discoverEditable()` trouve le compositeur par sa taille, pas par sa
+classe. Un provider peut donc survivre à un renommage de classes sans boucler.
+
 Règles qui découlent des bugs déjà payés :
 
 - **Écrire dans le bon type d'élément.** Un `contenteditable` et un
@@ -412,6 +437,16 @@ du `model`. C'est un invariant : une variable de comportement dans le corps
 lierait chaque client à un dialecte NemApi et casserait le « un protocole
 pour tout le monde ».
 
+**Le flux, c'est le client qui le demande** (`services/completions.py`) :
+`stream: true` dans le corps, ou en-tête `Accept: text/event-stream` → SSE ;
+**sinon JSON**. Aucun réglage du proxy ne force le SSE : un client qui
+n'annonce rien attend du JSON et le décode avec son propre analyseur
+(MonkeyCode : `json.Unmarshal` sur du `data: ` → « Invalid character 'd'
+looking for beginning of value », le modèle ne peut même pas être
+enregistré). Le réglage « Streaming » ne fait qu'**autoriser** le flux :
+désactivé, une demande de flux reçoit un 400 `streaming_disabled` explicite
+plutôt qu'une réponse d'un autre type que celui demandé.
+
 **Qui ouvre une nouvelle discussion ?** Jamais le client. Le proxy décide :
 `fresh_chat` vaut `False` par défaut (persistance de la discussion, pour tous
 les clients) ; une intégration qui n'a ni `persistent_chat` ni
@@ -464,8 +499,21 @@ courant, son contexte est de son côté.
 
 `utils/tools_format.py` (~900 l.) est le point de concentration de
 complexité : il doit comprendre le format ````tool` (fence ```` + ligne
-`<tool>{json}</tool>`), le DSML de DeepSeek, le XML de Qwen3-Coder, les
-`<invoke>`, et le JSON tolérant.
+`<tool>{json}</tool>`), le DSML de DeepSeek, le dialecte natif **multi-appels**
+`<｜tool▁calls▁begin｜>…`, le XML de Qwen3-Coder, les `<invoke>`, et le JSON
+tolérant.
+
+**Le dialecte V3 de DeepSeek se lit ligne à ligne** (`_dsv3_calls`), jamais avec
+un regex « tout-en-un » : l'ordre des tokens varie (tokens internes
+`call_begin`/`call_end` présents ou non, `function`/`<｜tool▁sep｜>` perdus par
+l'extraction DOM, bloc non fermé), un regex global rend 0 appel alors que le
+dialecte est lisible. Ne pas oublier de retirer les lignes de clôture markdown :
+le modèle encadre ses arguments d'un ````json`, et cette ligne serait sinon
+prise pour un nom d'outil.
+
+Quand un dialecte reste **non convertible**, `services/completions.py` écrit un
+avertissement qui nomme le dialecte (`Réponse en dialecte d'outils natif (DSML)`)
+au lieu de laisser le balisage partir en silence dans la conversation.
 
 Règle non négociable : **le texte restant ne doit jamais contenir de
 résidus d'appel d'outils** (ni fence, ni `<tool>`, ni tag DSML). L'agent
@@ -581,6 +629,18 @@ largeur occupe son conteneur), les prix de référence affichés avec leur
 date de vérification, et la carte de chaque agent qui explique comment
 NemApi le reconnaît.
 
+Deux harnais **jsdom** (pas de navigateur à installer) rejouent le vrai
+`base.js` dans un DOM : `tests/js/long_prompt.mjs` (collage de 150 KB, commit
+lent, site qui tronque) et `tests/js/send_control.mjs` (bouton d'envoi inconnu ou
+absent : une seule écriture, repli sur Entrée, échec borné et journalisé). Sans
+`jsdom`, ils sont *ignorés* — installer hors du dépôt pour ne pas y versionner
+`node_modules` :
+
+```bash
+mkdir -p /tmp/js && cd /tmp/js && npm init -y && npm install jsdom
+cd - && NODE_PATH=/tmp/js/node_modules .venv/bin/python -m pytest -q
+```
+
 Dépendances de test nécessaires (sinon les tests sont *ignorés*, pas échoués) :
 
 ```bash
@@ -633,8 +693,42 @@ de version cassait le build à chaque fois.
   version ne démarre pas un second routeur, une version plus récente reprend la
   main. **Incrémenter `CS_VERSION` à chaque livraison touchant l'extension** —
   c'est ce qui remplace un routeur orphelin dans un onglet déjà ouvert.
+- **Ne jamais juger un compositeur riche sur son texte exact** au-delà de
+  4 000 caractères, et jamais 320 ms après l'insertion : un éditeur riche
+  re-formate le texte (paragraphes, espaces insécables, lignes vides) et
+  **commite** un gros collage en plusieurs frames. `B.composerMatches`
+  (contenu, mise en page ignorée) et `waitForComposerToSettle` existent pour
+  cela. S'y tromper fait effacer et retaper le prompt en boucle — le pire
+  symptôme possible : le message ne part jamais et le doute porte sur le réseau.
+- Une tentative de saisie ratée ne doit **rien effacer** : le clignotement
+  « texte qui apparaît et disparaît » n'a pas d'autre cause.
 - Un prompt de plus de 8 000 caractères est écrit en **une seule** opération
   (`setValue` natif) : le pipeline `execCommand` par éditeur prend des minutes
   sur 100 KB. En dessous, il reste le meilleur chemin.
 - `api.github.com` et `grep.app` sont **rate-limités** depuis cette machine ;
   `lite.duckduckgo.com/lite/?q=` et `raw.githubusercontent.com` fonctionnent.
+
+---
+
+## 9. Compatibilité des clients (v5.6.0)
+
+Un client qui échoue dit rarement pourquoi : il rapporte « format
+incompatible ». Avant de conclure à un bug de NemApi, lire **le code du
+client** (le dépôt, pas sa documentation) et vérifier trois choses :
+
+1. **le chemin exact** — un client qui possède une URL de base concatène le
+   chemin lui-même (`baseURL + "chat/completions"`). C'est pourquoi chaque
+   surface est servie **avec et sans** le préfixe `/v1` : `routers/openai.py`
+   monte les mêmes routes sur deux routeurs (`router` et `compat_router`).
+   Toute nouvelle surface doit être montée de la même façon via `_mount()` ;
+2. **le protocole** — chat completions **et** Responses (`utils/responses_api.py`)
+   sont servis. Un client « OpenAI natif » peut envoyer l'un ou l'autre :
+   ne jamais supposer chat completions ;
+3. **l'infrastructure entre les deux** — un tunnel (Cloudflare, ngrok) coupe
+   une réponse sans données (100 s chez Cloudflare, erreur 524). Tout flux de
+   réponse longue doit émettre un battement de cœur : en chat, un chunk
+   `delta.content` vide ; en Responses, un commentaire SSE `: keep-alive`.
+
+Un corps de requête inconnu ne doit **jamais** être rejeté en bloc : le
+pipeline lit ce qu'il connaît et ignore le reste (`_Lenient`, `extra="allow"`).
+Les seuls 400 sont ceux qui rendent la requête ininterprétable.

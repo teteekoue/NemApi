@@ -798,3 +798,399 @@ trajet d'un job ne se valide pas sur une journée, et casse ce qui marchait.
 Recharger l'extension (`chrome://extensions`), redémarrer le proxy. Le premier
 job remplace seul le routeur de l'onglet : la version de `content.js` est
 publiée dans la page, un routeur plus ancien ne se défend plus.
+
+## 17. v5.6.0 — MonkeyCode : le protocole, le chemin, et le silence de Cloudflare (2026-10-30)
+
+### Le symptôme
+
+MonkeyCode (SaaS, agent de code en nuage, `chaitin/MonkeyCode` + son agent
+`OhMyAgent`) était configuré en fournisseur personnalisé « OpenAI natif »
+pointant sur un tunnel Cloudflare de NemApi. Le test de connexion et les
+requêtes échouaient sur un **format d'appel incompatible**.
+
+### Ce que le code de MonkeyCode fait réellement
+
+Lu dans le dépôt, pas deviné :
+
+- `backend/biz/llmproxy/proxy.go` — l'agent appelle le proxy de MonkeyCode sur
+  `/v1/chat/completions`, `/v1/responses` ou `/v1/messages`, et le proxy
+  réécrit vers **`<base_url>/chat/completions`** (ou `/responses`,
+  `/messages`) avec `filepath.Join`. Il ajoute `Authorization: Bearer <clé>`
+  et `X-Api-Key: <clé>`.
+- `backend/pkg/llm/check.go` — le test de connexion poste
+  `baseURL + "/chat/completions"` avec `{"model", "messages":[…"hi"], "max_tokens": 1}`
+  (ou `baseURL + "/responses"` avec `{"model", "input": […]}`).
+- `frontend/.../add-model.tsx` — l'URL affichée à l'utilisateur est
+  `baseUrl + "chat/completions"`, `baseUrl + "responses"` ou `baseUrl + "v1/messages"`.
+- `backend/biz/llmproxy/ohmyagent_prompt.go` — l'agent parle les trois
+  protocoles ; son prompt système commence par
+  « You are OhMyAgent, an AI coding agent for software engineering tasks. »
+
+Trois conclusions, donc :
+
+1. **l'URL de base doit finir par `/v1`**, sinon l'appel tombe sur
+   `/chat/completions` — que NemApi ne servait pas : 404 muet. C'est le cas le
+   plus probable du « format incompatible » ;
+2. choisir « OpenAI Responses » envoie `POST /responses` avec `instructions` +
+   `input` : NemApi n'avait **aucune** API Responses ;
+3. un tunnel Cloudflare coupe une réponse **sans données** au bout de 100 s
+   (erreur 524) : une génération de plusieurs minutes doit streamer.
+
+### Ce qui a été ajouté
+
+**API Responses (`proxy/nemapi/utils/responses_api.py`, `routers/openai.py`)**
+— `POST /v1/responses` et `/responses`, en flux et hors flux :
+
+- entrée : `instructions` → message système, `input` (chaîne, `message`,
+  `function_call`, `function_call_output`, `input_image`) → messages du
+  pipeline, `tools` à plat → tableau `tools` du chat, `tool_choice` transmis ;
+  les items non conversationnels (`reasoning`, `web_search`…) sont ignorés ;
+- sortie hors flux : un objet `response` complet (`output`, `usage`) ;
+- sortie en flux : la séquence attendue par un client Responses
+  (`response.created`, `response.output_item.added`,
+  `response.output_text.delta` découpé, `.done`, `response.completed`), et pour
+  un appel d'outil un item `function_call` avec `call_id`, `name`, `arguments` ;
+- le pipeline entier est réutilisé : file de jobs, extension, intégrations,
+  contexte incrémental, analyse des appels d'outils, keep-alive.
+
+**Chemins sans `/v1`** — les quatre surfaces (`/chat/completions`,
+`/responses`, `/models`, et `/models/{id}`) sont servies avec **et** sans le
+préfixe, pour que n'importe quelle combinaison d'URL saisie par l'utilisateur
+aboutisse.
+
+**Battement de cœur dans les flux Responses** — en-têtes immédiats, puis un
+commentaire SSE (`: keep-alive`) toutes les 15 s : aucun parseur SSE ne le lit,
+et ni Cloudflare ni l'agent ne coupent la connexion.
+
+**Intégration MonkeyCode** (`services/integrations.py`) — même socle que Qwen
+Code : discussion unique, contexte incrémental, appels d'outils, requêtes
+annexes locales, suite des réponses coupées, keep-alive. Reconnue par l'en-tête
+`X-NemApi-Agent: monkey-code`, le `User-Agent` de l'agent, ou le prompt système
+« You are OhMyAgent » (le signal fiable : le prompt part à chaque requête).
+
+### Piège documenté
+
+MonkeyCode déduit le protocole du **nom du modèle** quand l'interface n'est pas
+forcée (`fillInterfaceType`) : un nom contenant `claude` part en
+`/v1/messages` (Anthropic, non servi par NemApi), `codex` en `/responses`.
+La page Intégration et le README le disent : utiliser un nom NemApi sans ces
+mots (`deepseek-chat`, `qwen-chat`, `gemini-chat`, `glm-chat`…).
+
+### Vérifications
+
+- `proxy/tests/test_responses_api.py` : conversion entrée/sortie, séquence
+  d'événements, item `function_call`, endpoints avec et sans `/v1`, test de
+  connexion de MonkeyCode.
+- `proxy/tests/test_monkeycode_integration.py` : reconnaissance par le prompt
+  système, **contexte incrémental** (le 2ᵉ tour ne retape pas l'historique),
+  appel d'outil en réponse simple et en flux, intégration désactivée = mode
+  classique, et — la preuve qui compte — **le SDK OpenAI officiel** (v3.41)
+  lit notre flux Responses avec ses propres parseurs (`client.responses.create`,
+  en flux et hors flux).
+- `proxy/tests/test_responses_api.py` : battement de cœur vérifié sur une
+  réponse plus lente que le seuil (c'est ce que Cloudflare couperait).
+- Suite complète : **221 tests passés, 0 échec**.
+
+## 18. v5.6.1 — Le test de connexion de MonkeyCode refusait la configuration (2026-10-30)
+
+### Le symptôme
+
+Après avoir saisi l'URL Cloudflare dans MonkeyCode et lancé le test de
+connexion (« hi ») :
+
+```
+Model configuration check failed: parsed response:
+Invalid character 'd' looking for beginning of value
+```
+
+La configuration ne s'enregistre pas.
+
+### Ce que dit le message
+
+`Invalid character 'd' …` est une erreur du **décodeur JSON de Go**
+(`encoding/json`), pas de NemApi : le corps de la réponse n'est pas du JSON et
+commence par `d` — c'est-à-dire `data: `, le préfixe d'un flux SSE.
+
+Le test de connexion de MonkeyCode (`backend/pkg/llm/check.go`) poste
+
+```json
+{"model": "…", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+```
+
+avec seulement `Content-Type` et `Authorization` : **ni `stream`, ni
+`Accept`**. Or `services/completions.py` appliquait le réglage « Streaming »
+(activé par défaut) à tout client qui ne précisait rien : NemApi répondait un
+flux SSE à un client qui attendait un objet JSON. Son `json.Unmarshal` échoue
+sur le `d` de `data: ` et il refuse d'enregistrer le modèle.
+
+C'est une violation du contrat OpenAI, et elle touchait n'importe quel client
+exigeant du JSON, pas seulement MonkeyCode.
+
+### Le correctif
+
+`stream` est décidé par le **client**, et par lui seul :
+
+| Requête | Réponse |
+|---|---|
+| `stream: true` dans le corps | SSE |
+| `Accept: text/event-stream` | SSE |
+| tout le reste (y compris sans `stream` ni `Accept`) | **JSON** |
+
+Le réglage « Streaming » de la page Configuration devient ce qu'il aurait dû
+être : une **autorisation**. Désactivé, un client qui demande un flux reçoit un
+400 `streaming_disabled` avec un message explicite — jamais une réponse d'un
+autre type que celui demandé (c'était le défaut symétrique : « Streaming
+request received a non-SSE response » côté Qwen Code).
+
+Le libellé de la page Configuration est corrigé en conséquence.
+
+### Vérifications
+
+- `proxy/tests/test_monkeycode_integration.py` rejoue **la requête exacte** de
+  `check.go` sur un proxy aux réglages par défaut, sur les quatre chemins
+  (`/v1/chat/completions`, `/chat/completions`, `/v1/responses`, `/responses`) :
+  statut 200, `Content-Type: application/json`, premier octet `{`.
+- `proxy/tests/test_completions.py` : le client décide du flux (réglage ON ou
+  OFF), une demande de flux reste honorée, et le 400 `streaming_disabled` est
+  vérifié.
+- Suite complète : **223 tests passés, 0 échec**.
+
+## 19. v5.6.2 — Un très gros prompt n'est plus effacé et retapé en boucle (2026-10-30)
+
+### Le symptôme
+
+Tâche MonkeyCode arrivant à un prompt de **147 006 caractères** (mode
+classique : le contexte incrémental n'était pas activé, tout le prompt est donc
+tapé à chaque tour) :
+
+```
+12:53:22 Job error: DeepSeek: the prompt could not be written into the composer
+        (the page keeps clearing it)
+```
+
+puis cinq relances identiques. À l'écran : le prompt s'affiche dans le
+compositeur, disparaît, réapparaît — en boucle — et ne part jamais. Redémarrer
+le proxy n'y change rien : le défaut est dans l'extension.
+
+Les prompts de 100 à 142 KB passaient ; c'est le seuil qui rendait le défaut
+visible, pas un cas particulier.
+
+### Les deux causes
+
+**1. Une comparaison caractère par caractère.** `writeAndConfirm` (base.js)
+considérait la saisie réussie seulement si `editorText(el)` était **égal** au
+texte écrit. Or un éditeur riche ne restitue jamais fidèlement un texte de
+150 KB : il transforme les retours à la ligne en paragraphes, insère des espaces
+insécables, avale les lignes vides. La comparaison échouait sur un texte
+**présent**, l'appelant en concluait « le site l'a effacé », vidait le champ et
+retapait tout.
+
+**2. Un jugement trop tôt.** La lecture avait lieu 320 ms après l'insertion.
+Un éditeur riche **commite** un collage de 150 KB en plusieurs frames : à
+320 ms il ne contient qu'un préfixe. Même conclusion fausse, même boucle.
+
+Multipliées par l'échelle de tentatives (3 essais × 3 compositeurs), ces deux
+erreurs donnaient les 9 cycles effacer/retaper observés.
+
+### Le correctif
+
+- `base.js` — `composerMatches` : comparaison **exacte** en dessous de 4 000
+  caractères (un brouillon résiduel doit toujours être refusé), et au-delà
+  comparaison **sur le contenu** : mise en page normalisée d'abord, puis
+  tous les blancs retirés. Perdre un morceau de texte reste détecté.
+- `base.js` — `waitForComposerToSettle` : avant de juger un prompt de plus de
+  4 000 caractères, on attend que le compositeur cesse de grandir (deux
+  lectures identiques à 250 ms d'intervalle, 12 s au maximum).
+- `base.js` — `composerReport` : longueurs, premier caractère différent, et
+  **troncature** détectée, pour que l'erreur soit exploitable.
+- `deepseek.js` — une tentative ratée **n'efface plus** le compositeur (c'était
+  le clignotement) ; un prompt de plus de 40 000 caractères n'a droit qu'à
+  **une** tentative par éditeur ; si le compositeur contient déjà le prompt
+  (comparaison tolérante), il est **envoyé** au lieu d'être retapé ; et si le
+  site a réellement tronqué, le message le dit :
+  `(composer 100000c, wanted 150079c, the site truncated it — this prompt is too
+  large for this composer)`.
+- `completions.py` — en mode classique, un prompt de plus de 60 000 caractères
+  écrit un avertissement dans le journal : l'intégration de l'agent (contexte
+  incrémental) ne tape que le message nouveau.
+
+### Vérifications
+
+- `proxy/tests/test_extension_composer.py` : contrôles statiques, plus un
+  scénario qui charge **le vrai** `base.js` + `deepseek.js` dans un DOM et
+  envoie un prompt de 150 KB — commit lent (1,5 s), texte re-flowé, et site qui
+  tronque à 100 000 caractères (échec rapide et explicite, sans boucle).
+  Le harnais est versionné (`proxy/tests/js/long_prompt.mjs`), exécuté quand
+  `node` et `jsdom` sont disponibles, ignoré sinon.
+- Les tests existants des compositeurs courts (comparaison stricte, brouillon
+  résiduel non envoyé) passent inchangés.
+- Suite complète : **229 tests passés, 0 échec**.
+
+## 20. v5.6.3 — Kimi collait la requête en boucle, DeepSeek renvoyait son DSML (2026-10-30)
+
+Deux défauts distincts, remontés dans le même essai : « kimi collait la requête
+en boucle dans la barre de saisie sans jamais l'envoyer » et « deepseek ne
+respecte pas le format d'appel d'outil de monkeycode, il hallucine toujours le
+DSML ». Le périmètre demandé a été tenu : **les sélecteurs de DeepSeek n'ont pas
+été touchés**, et pour DeepSeek seul le **prompt** et le **décodage de la
+réponse** ont changé.
+
+### La boucle de collage (Kimi, Z.ai)
+
+`sendWithProof` (base.js) parcourait ses compositeurs candidats et, pour chacun,
+faisait `attempts` essais. À chaque essai il **réécrivait le prompt entier**
+(`writeAndConfirm` : `textContent = ""` puis recollage) quand le bouton d'envoi
+n'était pas trouvé — et il ne savait que **cliquer** : aucun repli sur Entrée.
+Un seul sélecteur d'envoi périmé suffisait donc à produire exactement ce que
+l'utilisateur voyait : le texte apparaît, disparaît, réapparaît, et ne part
+jamais.
+
+Correctif, sans changer l'ordre des tentatives :
+
+- le prompt est écrit **une seule fois** par surface (`attempts: 1` côté
+  écriture) ; une surface qui ne « tient » pas le texte est abandonnée, pas
+  réécrite ;
+- `discoverSend(near)` : quand aucun sélecteur connu ne matche, on cherche
+  **le petit élément cliquable** au bas du compositeur (listes `BAD`/`GOOD` pour
+  écarter « modèle », « pièce jointe », « micro ») ;
+- `pressEnter(el)` : si rien d'utilisable n'est cliquable, **Entrée** est
+  essayée (beaucoup de sites envoient sur Entrée) ;
+- le nettoyage de la surface n'a lieu qu'**en sortie de parcours**, plus à
+  chaque tentative ;
+- un journal explicite : `no usable send control (attempt …, found=…)`.
+
+Côté sélecteurs (Kimi et Z.ai uniquement) : `INPUT` accepte
+`[class*="chat-input"] [contenteditable]`, `[data-testid*="editor"]`… et
+`inputCandidates()` retombe sur `B.discoverEditable()` (le plus grand
+`textarea`/`contenteditable` visible, bonus s'il est en bas de l'écran) ;
+`findSend()` retombe sur `B.discoverSend()`.
+
+### Le DSML de DeepSeek
+
+Le dialecte natif **multi-appels** :
+
+```
+<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>read_file
+{"file_path": "a.py"}<｜tool▁call▁end｜><｜tool▁call▁begin｜>…
+```
+
+n'était **pas** reconnu (0 appel) : le balisage partait tel quel dans la
+conversation, d'où « le modèle ne respecte pas le format ». Un regex
+« tout-en-un » a d'abord échoué (l'ordre des tokens varie) ; la solution est un
+analyseur **ligne à ligne** (`_dsv3_calls`) branché avant le cas simple :
+
+- plusieurs appels dans un même bloc → tous convertis ;
+- tokens internes présents ou non, bloc non fermé, `function`/`<｜tool▁sep｜>`
+  dupliqués ou perdus par l'extraction DOM ;
+- arguments **JSON sur plusieurs lignes** et arguments entourés d'une clôture
+  markdown (le modèle copie l'habitude « JSON dans un bloc de code ») ;
+- la ligne de clôture ``` n'est jamais prise pour un nom d'outil ;
+- **la prose qui suit un bloc non fermé est conservée** : sans jeton de fin, un
+  nom d'outil **connu** de la requête est la seule chose qui distingue un appel
+  de la phrase écrite après (sans ce garde-fou, « Je continue après… » devenait
+  un appel d'outil `Je` et disparaissait de la réponse).
+
+Le prompt d'outils (`serialize_tools_prompt`) **liste désormais les syntaxes
+interdites** — `｜DSML｜tool_calls` / `｜DSML｜invoke` / `｜DSML｜parameter`,
+`｜tool▁call▁begin｜`, `<function_calls>`, `<invoke>/<parameter>`, bloc `json`
+clos et objet JSON nu — et rappelle que **la page est une interface de chat**,
+dont le balisage natif n'est pas interprété : seul le bloc ```` ```tool ```` l'est.
+
+Enfin, une réponse qui contient **encore** du balisage natif non convertible
+écrit un avertissement nommant le dialecte (`Réponse en dialecte d'outils natif
+(DSML)…`) : le prochain échantillon suffira à compléter l'analyseur, au lieu
+d'un échec silencieux.
+
+### Vérifications
+
+- `proxy/tests/test_tool_parsing.py` : le test du dialecte V3 passe (il servait
+  de sonde rouge), plus cinq tests neufs — plusieurs appels, tokens internes
+  absents / bloc non fermé, arguments multi-lignes, deux `<invoke>` DSML, et la
+  prose d'après bloc non fermé préservée.
+- `proxy/tests/test_completions.py` : deux appels V3 dans une seule réponse →
+  deux `tool_calls` et un `content` propre ; un dialecte non convertible →
+  avertissement « dialecte » dans le journal.
+- `proxy/tests/js/send_control.mjs` (nouveau, jsdom) exécute **le vrai**
+  `base.js` : bouton d'envoi inconnu → découvert et cliqué, **une seule
+  écriture** ; aucun bouton → Entrée ; site qui refuse tout → échec borné et
+  journalisé, sans recollage. `test_extension_composer.py` le lance (ignoré si
+  `node`/`jsdom` absents) et vérifie que les sélecteurs de DeepSeek restent
+  seuls.
+- Suite complète : **240 tests passés, 6 ignorés**.
+
+## 21. v5.6.4 — Le prompt est saisi et il disparaît (DeepSeek, 17 562 caractères) (2026-10-31)
+
+### Le symptôme
+
+```
+09:31:55 Completion → deepseek/deepseek-chat stream=False tools=0 prompt=1122c
+          Job 1fa9b385 OK: 579 chars                     ← passe
+09:32:03 Completion → deepseek/deepseek-chat stream=False tools=0 prompt=17562c
+          Job 56a7967a error: DeepSeek: the prompt could not be written into the
+          composer (the page keeps clearing it)           ← trois fois de suite
+```
+
+Le prompt de 1 122 caractères passait, celui de 17 562 non, sur la **même
+page**, une seconde plus tard. À l'écran : le texte apparaît, disparaît,
+revient, et rien ne part. La version stable v5.5.0 est concernée — la régression
+ne vient donc pas de v5.6.x.
+
+### Les deux causes
+
+**1. La comparaison lisait le compositeur comme un fichier texte.**
+`writeAndConfirm` (base.js) validait l'écriture si `editorText(el) === text`.
+DeepSeek utilise un éditeur riche (Lexical) : chaque ligne devient un
+paragraphe, donc une **ligne vide** se relit comme **deux** retours à la ligne
+(`<p>a</p><p></p><p>b</p>` → `a\n\n\nb` une fois mis bout à bout). Un prompt
+d'agent est plein de lignes vides — titres, listes, blocs de code — et un prompt
+de 17 562 caractères en comptait des centaines. La comparaison échouait sur un
+texte **présent**, l'adaptateur en concluait « le site a effacé le texte »,
+**vidait le compositeur et retapait les 17 562 caractères**, puis échouait.
+
+C'est ce qui explique le seuil apparent : un prompt d'une seule ligne (127
+caractères) n'a aucune ligne vide, donc aucune divergence.
+
+**2. Un bouton d'envoi jugé en 2,5 s, et un verdict fatal.**
+`typePrompt` attendait ensuite le bouton d'envoi pendant 2 500 ms fixes. Ce
+bouton suit l'état de l'application, qui commute d'autant plus tard que le
+prompt est long. Au-delà du délai, le code concluait « le bouton est resté
+désactivé (l'application a effacé le texte) » et **recommençait l'écriture** :
+trois cycles, trois effacements — le clignotement — puis l'erreur.
+
+### Le correctif
+
+- `base.js:composerMatches` — la comparaison porte sur le **contenu**, à toute
+  taille (le seuil de 4 000 caractères disparaît : il refusait aussi un prompt
+  de 3 KB simplement remis en forme) :
+  1. exact ;
+  2. puis tous les blancs retirés ;
+  3. puis, au-delà de 2 000 caractères, les **mots** : rien de perdu
+     (`wordsA.length >= wordsB.length`), rien d'ajouté au-delà de 2 % + 8 mots,
+     et chaque mot du prompt présent **dans l'ordre**. Une troncature perd la
+     fin, un brouillon résiduel ajoute des mots : les deux restent refusés.
+- `deepseek.js:composerHolds` — même comparaison à toute taille (avant, la
+  comparaison tolérante n'était utilisée qu'au-delà de 4 000 caractères).
+- `deepseek.js:typePrompt` — écriture **unique** ; une seconde écriture
+  seulement si le compositeur est **vide** (un vrai effacement, par exemple à
+  la fin d'un upload) ; l'attente du bouton d'envoi grandit avec le prompt
+  (`min(20 s, 3 s + chars / 4)`) ; un bouton qui reste désactivé **ne fait plus
+  réécrire** : le texte est gardé et l'envoi continue par **Entrée**.
+- `deepseek.js:sendPrompt` — un bouton absent n'est plus une erreur : les
+  replis (Entrée, puis clic) s'appliquent au texte déjà écrit ; le message
+  d'échec donne les chiffres (`composer 18216c, wanted 17562c, first difference
+  at 22, editors=1, send=none`).
+
+### Vérifications
+
+- `proxy/tests/js/deepseek_composer.mjs` (nouveau, jsdom) rejoue **le vrai**
+  `deepseek.js` sur une page dont le compositeur se comporte comme celui de
+  DeepSeek : texte remis en forme, et **bouton d'envoi qui arrive en retard**
+  (120 ms pour 127 caractères, 3,2 s pour 17 KB, 6 s pour le scénario extrême).
+  Trois tailles de prompt (127, 1 122, 17 562) : message envoyé, entier, avec
+  **une seule écriture**. Une troncature est refusée avec ses chiffres, une
+  page qui ignore l'écriture échoue une fois, sans retaper.
+- **Le même harnais sur la v5.5.0** (les fichiers de `1b3881e` extraits avec
+  `git show`) rend **les 8 erreurs**, avec exactement le message du rapport :
+  `DeepSeek: the prompt could not be written into the composer (the page keeps
+  clearing it)`. La reproduction est donc fidèle, pas une reconstitution.
+- Suite complète : **242 tests passés, 6 ignorés**.
