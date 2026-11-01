@@ -5,7 +5,9 @@ avant de toucher au code**, et pourquoi le code est comme il est.
 
 > Le `README.md` est la documentation d'usage (installation, configuration, API).
 > Ce fichier est le companion technique : invariants, pièges, et décisions
-> prises. Les deux se complètent, ils ne se remplacent pas.
+> prises. `FIXES.md` raconte chaque version (symptôme, cause, correctif). Les
+> trois se complètent, ils ne se remplacent pas — et le README ne porte **pas**
+> d'historique de versions (une section « nouveautés » y vieillit mal).
 
 ---
 
@@ -629,10 +631,12 @@ largeur occupe son conteneur), les prix de référence affichés avec leur
 date de vérification, et la carte de chaque agent qui explique comment
 NemApi le reconnaît.
 
-Deux harnais **jsdom** (pas de navigateur à installer) rejouent le vrai
+Trois harnais **jsdom** (pas de navigateur à installer) rejouent le vrai
 `base.js` dans un DOM : `tests/js/long_prompt.mjs` (collage de 150 KB, commit
-lent, site qui tronque) et `tests/js/send_control.mjs` (bouton d'envoi inconnu ou
-absent : une seule écriture, repli sur Entrée, échec borné et journalisé). Sans
+lent, site qui tronque), `tests/js/send_control.mjs` (bouton d'envoi inconnu ou
+absent : une seule écriture, repli sur Entrée, échec borné et journalisé) et
+`tests/js/deepseek_composer.mjs` (compositeur qui remet le texte en forme,
+bouton d'envoi qui arrive en retard de plusieurs secondes). Sans
 `jsdom`, ils sont *ignorés* — installer hors du dépôt pour ne pas y versionner
 `node_modules` :
 
@@ -662,6 +666,11 @@ de version cassait le build à chaque fois.
 ---
 
 ## 7. Conventions
+
+**Licence.** Le dépôt est **privé** et sous licence propriétaire (`LICENSE`,
+tous droits réservés) — pas MIT, pas d'open source. Conséquence directe sur le
+code : ne pas copier de bloc provenant d'un projet sous GPL/AGPL, et ne pas
+ajouter de dépendance dont la licence imposerait de publier ce code.
 
 - **Python** : annotations de type, `from __future__ import annotations`,
   docstrings en anglais, une fonction = une responsabilité.

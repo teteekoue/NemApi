@@ -1,7 +1,24 @@
-# NemApi v4.0 — Correctifs (export du 2026-09-02)
+# NemApi — historique technique des correctifs
 
-Version corrigée de l'extension + du proxy. Résume les changements par rapport
-à la version précédente.
+Un chapitre par version : le **symptôme** observé, la **cause** réelle, le
+**correctif**, et ce qui le **vérifie**. C'est le document à lire avant de
+toucher un sous-système fragile (compositeur, détection de fin de réponse,
+lecture des appels d'outils) ; l'architecture et les invariants sont dans
+`AGENTS.md`, l'usage courant dans `README.md`.
+
+| Version | Sujet | Chapitre |
+|---|---|---|
+| v5.6.4 | « le prompt est saisi et il disparaît » — comparaison du compositeur | §21 |
+| v5.6.3 | boucle de collage Kimi/Z.ai, dialecte d'outils multi-appels de DeepSeek | §20 |
+| v5.6.2 | très gros prompt effacé et retapé en boucle | §19 |
+| v5.6.1 | le test de connexion de MonkeyCode refusait la configuration | §18 |
+| v5.6.0 | MonkeyCode : API Responses, chemins sans `/v1`, silence de Cloudflare | §17 |
+| v5.5.0 | onglet en arrière-plan, 20 s perdues, premier envoi d'un agent | §14–16 |
+| v5.3.1 | discussion persistante par défaut, première requête immédiate | §13 |
+| v5.3.0 | un seul protocole, deux intégrations au point, interface revue | §12 |
+| v5.2.0 | images : le prompt attend la fin de l'upload | §11 |
+| v5.0.0 | intégrations d'agents et nouvelle interface | §10 |
+| v4.x | contexte incrémental, réécriture FastAPI, extraction | §1–9 |
 
 ## 1. Réponses identiques ignorées (bug du « 2ème message »)
 
