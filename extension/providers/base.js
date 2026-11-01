@@ -349,6 +349,99 @@
   }
 
   /**
+   * Last-resort composer discovery.
+   *
+   * Selectors age: a site renames one class and the composer becomes
+   * invisible to every list of candidates — the prompt is then "written" into
+   * nothing, or the send control is never found, and the caller loops. This
+   * finds the editable surface the page is actually using: the biggest visible
+   * textarea / contenteditable, preferring the one an input event would reach
+   * (bottom of the viewport, near a button).
+   *
+   * It only runs when the specific selectors found nothing.
+   */
+  function discoverEditable() {
+    const nodes = [];
+    const push = (root) => {
+      try {
+        root
+          .querySelectorAll("textarea, [contenteditable='true'], [role='textbox']")
+          .forEach((el) => nodes.push(el));
+      } catch (_) {}
+    };
+    push(document);
+    for (const root of openShadowRoots()) push(root);
+    const vh = (window.innerHeight || 800);
+    let best = null;
+    let bestScore = -1;
+    for (const el of nodes) {
+      if (!isVisible(el)) continue;
+      if (el.disabled || el.readOnly) continue;
+      if (el.getAttribute && el.getAttribute("contenteditable") === "false") continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (!r || r.width < 80 || r.height < 10) continue;
+      // prefer: large, low on the screen, editable text
+      const score =
+        Math.min(r.width, 1200) / 10 +
+        Math.min(r.height, 300) / 5 +
+        (r.top > vh * 0.4 ? 60 : 0) +
+        (el.tagName === "TEXTAREA" ? 20 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Last-resort send control, anchored on the composer we wrote into.
+   *
+   * A send control is a small clickable element right of / below the composer.
+   * Everything that is obviously something else (stop, attach, upload, mic,
+   * model picker, toolkit) is refused by its label.
+   */
+  function discoverSend(near) {
+    const root = near ? findComposerRoot(near) : document.body;
+    const scope = root && root.querySelectorAll ? root : document;
+    const base = near && near.getBoundingClientRect ? near.getBoundingClientRect() : null;
+    const BAD = /stop|cancel|attach|upload|file|mic|voice|audio|toolkit|model|setting|menu|close|delete|clear|copy|retry|regenerat|scroll|download|share|like|dislike|feedback|speak|search|web|deep|think|reason/i;
+    const GOOD = /send|submit|发送|送信|enviar|envoyer/i;
+    let best = null;
+    let bestScore = -1;
+    const nodes = [];
+    try {
+      scope.querySelectorAll("button, [role='button'], [type='submit']").forEach((el) => nodes.push(el));
+    } catch (_) {}
+    for (const el of nodes) {
+      if (!isVisible(el)) continue;
+      const label = `${el.getAttribute("aria-label") || ""} ${el.title || ""} ${el.id || ""} ${
+        typeof el.className === "string" ? el.className : ""
+      } ${el.getAttribute("data-testid") || ""}`;
+      if (BAD.test(label)) continue;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (!r || r.width < 12 || r.height < 12) continue;
+      let score = 0;
+      if (GOOD.test(label)) score += 100;
+      if (base) {
+        // right of the composer, on the composer's line
+        const dx = r.left - base.right;
+        const dy = Math.abs(r.top + r.height / 2 - (base.top + base.height / 2));
+        if (dx > -base.width * 0.6 && dx < 320) score += 20;
+        if (dy < Math.max(80, base.height)) score += 25;
+      }
+      // a send control is small (an arrow) and often round
+      if (r.width <= 64 && r.height <= 64) score += 10;
+      if (/^button$/i.test(el.tagName)) score += 5;
+      if (score > bestScore) {
+        bestScore = score;
+        best = el;
+      }
+    }
+    return bestScore >= 20 ? best : null;
+  }
+
+  /**
    * Value React currently holds for a controlled field (the composer textarea).
    *
    * The DOM value is NOT enough: React keeps its own state and rewrites the
@@ -391,6 +484,90 @@
    * still "contains" our text, but the message that would be sent is the
    * concatenation of the two. The composer check must be exact.
    */
+  /**
+   * Compare a composer's content with what we wrote, TOLERANTLY for long text.
+   *
+   * A 100 to 150 KB prompt cannot be compared character for character with the
+   * DOM: a rich editor turns newlines into <br> / paragraphs, inserts
+   * non-breaking spaces, and may normalise trailing blanks. `textEquals` then
+   * never succeeds, and the caller — which believes the text was wiped —
+   * clears the field and types it again: the user sees the prompt appear and
+   * disappear in a loop, and the message is never sent.
+   *
+   * The comparison therefore runs on a normalised form (line endings, NBSP,
+   * runs of spaces, empty lines) and, above 4 000 characters, ALSO accepts the
+   * case where the editor kept our text minus a normalisation difference —
+   * but never a truncation, which is reported separately by
+   * `composerReport` so the caller can say what the site did.
+   */
+  function normalizeComposer(value) {
+    return String(value ?? "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u00a0\u2007\u202f]/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/ *\n */g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  /** Every character kept, all layout dropped: what "the text is there" means. */
+  function compactComposer(value) {
+    return String(value ?? "").replace(/\s+/g, "");
+  }
+
+  function composerMatches(observed, want) {
+    if (textEquals(observed, want)) return true;
+    if (!String(want ?? "").trim()) return false;
+    const a = normalizeComposer(observed);
+    const b = normalizeComposer(want);
+    if (a === b) return true;
+    // No editor round-trips whitespace faithfully — and not only for huge
+    // prompts: a Lexical editor (DeepSeek) renders every blank line as an
+    // empty <p>, so `innerText` reads it back with TWO newlines where the
+    // prompt had one. A 17 562-character agent prompt (5.8 % blank lines) then
+    // never matched, `writeAndConfirm` re-typed it, and the caller concluded
+    // "the page keeps clearing it" — the 09:32 loop of the report. The same
+    // happened for a 3 KB prompt: the threshold below 4 000 characters was
+    // simply wrong.
+    //
+    // What must still be refused is a LEFTOVER DRAFT or a TRUNCATION. So the
+    // text is compared on its content only (every whitespace dropped) and, if
+    // that differs, on its words: a real draft adds words, a truncation loses
+    // the end — neither is accepted.
+    if (compactComposer(a) === compactComposer(b)) return true;
+    // A SHORT text must match on its content, exactly: a leftover draft has to
+    // be refused, and "hello there" is not "hello world".
+    if (b.length < 2000) return false;
+    // Then on its words: an editor may also insert a marker (a bullet, a
+    // space) or merge two characters. Nothing may be LOST, nothing may be
+    // ADDED beyond a little layout, and every word of the prompt must appear,
+    // in order — a truncation loses the end, a draft adds words.
+    const wordsA = a.split(/\s+/).filter(Boolean);
+    const wordsB = b.split(/\s+/).filter(Boolean);
+    if (!wordsB.length || wordsA.length < wordsB.length) return false;
+    if (wordsA.length > wordsB.length * 1.02 + 8) return false;
+    let j = 0;
+    for (const word of wordsA) {
+      if (j < wordsB.length && word === wordsB[j]) j += 1;
+    }
+    return j === wordsB.length;
+  }
+
+  /** Why a write failed, in numbers — logged and shown to the caller. */
+  function composerReport(observed, want) {
+    const a = String(observed ?? "");
+    const b = String(want ?? "");
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+    return {
+      dom: a.length,
+      want: b.length,
+      firstDiff: i,
+      truncated: a.length > 0 && a.length < b.length * 0.98,
+      matches: composerMatches(a, b),
+    };
+  }
+
   function textEquals(observed, want) {
     const a = String(observed || "").trim();
     const b = String(want || "").trim();
@@ -755,6 +932,32 @@
    * `findEl` is called again on every attempt: React may have replaced the
    * node entirely (a remount discards the text that was written on it).
    */
+  /**
+   * Wait until the composer stops growing (a long insert is committed in
+   * several frames by Lexical/ProseMirror). Bounded: 12 s, or two identical
+   * readings 250 ms apart.
+   */
+  async function waitForComposerToSettle(el, { timeout = 12000, step = 250 } = {}) {
+    const t0 = Date.now();
+    let last = -1;
+    let same = 0;
+    while (Date.now() - t0 < timeout) {
+      let n = 0;
+      try {
+        n = editorText(el).length;
+      } catch (_) {}
+      if (n > 0 && n === last) {
+        same += 1;
+        if (same >= 2) return n;
+      } else {
+        same = 0;
+      }
+      last = n;
+      await sleep(step);
+    }
+    return last;
+  }
+
   async function writeAndConfirm(findEl, text, { attempts = 5, holdMs = 320, settleMs = 600, log } = {}) {
     const want = String(text ?? "").trim();
     if (!want) return null;
@@ -774,30 +977,38 @@
       }
       setTextareaValue(el, text);
       await sleep(holdMs);
+      // A very long prompt is not committed in 320 ms: the rich editor keeps
+      // rendering it, and reading it now returns a PREFIX. Judging that
+      // prefix as "the app wiped the text" made the caller clear the composer
+      // and type the whole 150 KB again — the loop the user saw. Wait until
+      // the editor stops growing before comparing.
+      if (want.length > 4000) await waitForComposerToSettle(el);
       // The app may re-render right after (the end of an upload): a text
       // written too early is wiped when it restores its own state. The check
       // is therefore made TWICE, with a settle window in between.
+      // long prompts: a character-for-character comparison with the DOM is
+      // impossible (see composerMatches) — that mismatch is what made a
+      // 150 KB prompt loop between "typed" and "cleared"
+      const match = want.length > 4000 ? composerMatches : textEquals;
       const dom = editorText(el);
       const react = readReactValue(el);
-      const ok = textEquals(dom, want) && (react === null || textEquals(react, want));
+      const ok = match(dom, want) && (react === null || match(react, want));
       if (ok) {
         await sleep(settleMs);
         const dom2 = editorText(el);
         const react2 = readReactValue(el);
-        if (
-          textEquals(dom2, want) &&
-          (react2 === null || textEquals(react2, want))
-        ) {
+        if (match(dom2, want) && (react2 === null || match(react2, want))) {
           return el;
         }
         if (log) log(`write attempt ${attempt}: wiped by a re-render, retrying`);
         continue;
       }
       if (log) {
+        const r = composerReport(dom, want);
         log(
-          `write attempt ${attempt}: dom=${dom.length}c react=${
-            react === null ? "n/a" : react.length + "c"
-          } confirmed=${ok}`
+          `write attempt ${attempt}: dom=${r.dom}c want=${r.want}c ` +
+            `first diff at ${r.firstDiff}${r.truncated ? " (the site truncated the prompt)" : ""} ` +
+            `react=${react === null ? "n/a" : react.length + "c"}`
         );
       }
       await sleep(200);
@@ -1307,39 +1518,73 @@
     const want = String(text ?? "").trim();
     const cands =
       (typeof inputCandidates === "function" ? inputCandidates() : inputCandidates) || [];
-    if (!cands.length) return null;
+    if (!cands.length) {
+      if (log) log("no editable composer found at all");
+      return null;
+    }
+    // A 100 KB prompt needs the tolerant comparison, a short one the exact
+    // check (a leftover draft must never be sent).
+    const same = want.length > 4000 ? composerMatches : textMatches;
+    const holds = (el) => {
+      try {
+        return !!want && same(editorText(el), want);
+      } catch (_) {
+        return false;
+      }
+    };
     for (const el of cands.slice(0, 3)) {
       // a disabled surface (an upload in progress) is postponed, not dropped
       if (!(await waitEditable(el, 6000))) continue;
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        const written = await writeAndConfirm(() => el, text, { attempts: 2, log });
+
+      // Write ONCE. The old loop rewrote the whole prompt on every attempt,
+      // which is what the user saw as "the message is pasted again and again
+      // and never sent": the send control was never found, and each retry
+      // wiped and retyped the composer.
+      if (!holds(el)) {
+        const written = await writeAndConfirm(() => el, text, { attempts: 1, log });
         if (!written) {
-          await sleep(200);
-          continue;
+          if (log) log("this surface did not take the text → trying the next one");
+          continue; // the next attempt clears the surface itself
         }
+      }
+
+      let lastBtn = null;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
         const btn = await waitForEnabledSend(
-          () => (findSend ? findSend(written) : null),
-          sendTimeout,
+          () => (findSend ? findSend(el) : null),
+          attempt === 1 ? sendTimeout : 2500,
           sendDisabledCheck
         );
-        if (
+        lastBtn = btn;
+        const usable =
           btn &&
           !isDisabled(btn) &&
           isVisible(btn) &&
-          (!sendDisabledCheck || !sendDisabledCheck(btn))
-        ) {
-          // the app took it — make sure it is not wiped a moment later
+          (!sendDisabledCheck || !sendDisabledCheck(btn));
+        if (usable) {
           await sleep(settleMs);
-          if (!textMatches(editorText(written), want)) {
-            if (log) log(`send attempt ${attempt}: the text was wiped, retrying`);
-            continue;
-          }
-          return { input: written, btn };
+          if (holds(el)) return { input: el, btn };
+          if (log) log("the text was wiped while the send control was awaited");
+          break; // the app cleared it: write it again, once
         }
-        if (log) log(`send attempt ${attempt}: the send control stayed disabled`);
-        await sleep(200);
+        // No usable control: several apps (Kimi) accept Enter, and the button
+        // only appears once the page has re-rendered — press Enter and see.
+        if (log) {
+          log(
+            `no usable send control (attempt ${attempt}, found=${btn ? "yes" : "no"}) ` +
+              "→ trying Enter"
+          );
+        }
+        pressEnter(el);
+        await sleep(settleMs);
+        if (!holds(el)) return { input: el, btn: null }; // the app took it
       }
-      // this surface does not take the text: clear it and try the next one
+      if (log) {
+        log(
+          "the send control stayed unusable — clearing this surface and trying the next one " +
+            `(found=${lastBtn ? lastBtn.tagName + "." + (lastBtn.className || "") : "none"})`
+        );
+      }
       try {
         if (isContentEditable(el)) el.textContent = "";
         else clearNativeValue(el);
@@ -3019,5 +3264,11 @@
     isUserMessageContext,
     isAssistantMessageContext,
     scoreMessageCopyButton,
+    composerMatches,
+    composerReport,
+    discoverEditable,
+    discoverSend,
+    normalizeComposer,
+    compactComposer,
   };
 })(typeof window !== "undefined" ? window : self);

@@ -50,7 +50,7 @@ async def test_defaults_off_and_shape(server):
         assert (await c.get("/status")).json()["integrations"] == {
             a["id"]: False for a in snap["agents"]
         }
-        assert {a["id"] for a in snap["agents"]} == {"qwen-code", "nemesis"}
+        assert {a["id"] for a in snap["agents"]} == {"qwen-code", "monkey-code", "nemesis"}
         health = (await c.get("/health")).json()
         assert health["app_version"] == __version__
         settings = (await c.post("/settings", json={})).json()

@@ -1,6 +1,7 @@
 """Chat-completion pipeline: validate → build prompt → queue job → post-process."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -101,13 +102,27 @@ def prepare(ctx: AppContext, body: ChatCompletionRequest, headers: Mapping[str, 
             if fn.get("name"):
                 tool_names.append(str(fn["name"]))
 
-    # Explicit client flag wins; else the admin toggle. SSE Accept header forces streaming.
-    if "stream" in body.model_fields_set:
-        stream = bool(body.stream)
-    else:
-        stream = ctx.config.get("stream_enabled")
+    # THE CLIENT decides, as the OpenAI contract says:
+    #   stream:true in the body, or `Accept: text/event-stream`  → SSE
+    #   anything else                                            → JSON
+    #
+    # The admin « Streaming » toggle used to force SSE on clients that asked
+    # for nothing. That broke every spec-compliant client whose parser expects
+    # JSON: MonkeyCode's health check (Go, `json.Unmarshal`) fails on the
+    # `d` of `data: ` with "Invalid character 'd' looking for beginning of
+    # value", and a request that would have worked could not even be saved.
+    # The toggle now means "streaming allowed": turned off, a client that asks
+    # for a stream gets a clear 400 instead of a silently non-SSE answer.
+    stream = bool(body.stream) if "stream" in body.model_fields_set else False
     if "text/event-stream" in (headers.get("accept") or "").lower():
         stream = True
+    if stream and not ctx.config.get("stream_enabled"):
+        raise APIError(
+            400,
+            "Streaming is disabled in NemApi (Configuration → Streaming). "
+            "Send `stream: false`, or turn the switch back on.",
+            "streaming_disabled",
+        )
 
     plan = None
     local = None
@@ -181,6 +196,22 @@ def run_local(ctx: AppContext, prep: PreparedCompletion) -> CompletionResult:
     return CompletionResult(local.text, list(local.tool_calls), approx_tokens(prep.prompt), approx_tokens(local.text))
 
 
+_NATIVE_MARKUP_RE = (
+    ("DSML", re.compile(r"DSML", re.I)),
+    ("tool▁call", re.compile(r"tool\u2581call")),
+    ("<function_calls>", re.compile(r"<function[_-]?calls", re.I)),
+    ("<invoke>", re.compile(r"<invoke\s+name=", re.I)),
+)
+
+
+def _native_tool_markup(text: str) -> str:
+    """The native tool markup still present in an answer ('' = clean)."""
+    for label, rx in _NATIVE_MARKUP_RE:
+        if rx.search(text or ""):
+            return label
+    return ""
+
+
 def _agent(prep: PreparedCompletion) -> str:
     return prep.integration.agent.name if prep.integration else "Agent"
 
@@ -197,6 +228,15 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
         f"Completion → {prep.provider}/{prep.response_model} stream={prep.stream} "
         f"tools={len(prep.tool_names)} prompt={len(prep.prompt)}c {mode}"
     )
+    # A 100 KB prompt typed in full is slow and fragile (the site's composer
+    # has its limits, and an editor that truncates it can never be confirmed).
+    # The agent integration types only what is new: say it, once per request.
+    if prep.integration is None and len(prep.prompt) > 60000:
+        ctx.logs.warn(
+            f"Prompt de {len(prep.prompt)}c tapé en entier (mode classique) : "
+            "active « Intégration agents IA » pour cet agent — le contexte incrémental "
+            "ne tape que le message nouveau"
+        )
     job = ctx.sessions.find_inflight(prep.plan) if prep.plan is not None else None
     if job is not None:
         ctx.logs.info(f"Contexte incrémental: requête relancée → attend le job en cours {job.short_id} (pas de renvoi)")
@@ -227,6 +267,15 @@ async def run(ctx: AppContext, prep: PreparedCompletion, is_disconnected=None) -
     parsed = job.parsed or postprocess(
         job.result, prep.tool_names, prep.tools, generic=(prep.tool_mode == "native")
     )
+    # A model that answers in its own native tool dialect is a real failure of
+    # the agent: the markup reaches it as text and no tool is executed. Say it
+    # once, with a sample, instead of failing silently.
+    leftover = _native_tool_markup(parsed.text)
+    if leftover:
+        ctx.logs.warn(
+            f"Réponse en dialecte d'outils natif ({leftover}) : l'appel n'a pas pu être converti "
+            "en tool_calls. Envoie un extrait de la réponse pour compléter l'analyseur."
+        )
     # usage/cost always reflect the full conversation (what an API would bill),
     # even when only a delta was typed into the web UI
     prompt_tokens = approx_tokens(prep.prompt)

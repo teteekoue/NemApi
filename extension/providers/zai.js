@@ -24,6 +24,10 @@
     "#send-message-button",
     'button[id="send-message-button"]',
     'button[aria-label*="Send" i]',
+    '[role="button"][aria-label*="Send" i]',
+    '[data-testid*="send" i]',
+    '[class*="send-button"]',
+    '[class*="send-btn"]',
     'button[type="submit"]',
     "button.send-button",
   ];
@@ -92,7 +96,14 @@
 
   /** The editable surfaces of the composer, best candidate first. */
   function inputCandidates() {
-    return B.inputCandidatesFrom(INPUT);
+    const found = B.inputCandidatesFrom(INPUT);
+    if (found.length) return found;
+    const guessed = B.discoverEditable ? B.discoverEditable() : null;
+    if (guessed) {
+      log("no known composer selector matched → using the detected editable surface");
+      return [guessed];
+    }
+    return found;
   }
 
   function log(msg) {
@@ -121,7 +132,11 @@
         return el;
       }
     }
-    return B.findByText(["button", "[role='button']"], [/send/i, /submit/i, /发送/], root);
+    const byText = B.findByText(["button", "[role='button']"], [/send/i, /submit/i, /发送/], root);
+    if (byText) return byText;
+    const guessed = B.discoverSend ? B.discoverSend(input) : null;
+    if (guessed) log("no known send selector matched → using the detected send control");
+    return guessed;
   }
 
   function getMessageEls() {

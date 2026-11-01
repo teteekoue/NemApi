@@ -191,6 +191,84 @@ QWEN_CODE = AgentProfile(
     ),
 )
 
+MONKEY_CODE = AgentProfile(
+    id="monkey-code",
+    name="MonkeyCode",
+    vendor="chaitin · OhMyAgent",
+    homepage="https://github.com/chaitin/MonkeyCode",
+    description=(
+        "Agent de code en nuage : la tâche tourne dans un environnement distant, l'agent renvoie tout son "
+        "historique à chaque tour, écrit des fichiers entiers et enchaîne les appels d'outils."
+    ),
+    setup=(
+        "MonkeyCode → Console → Modèles → lier un modèle personnalisé : interface « OpenAI Chat » (ou "
+        "« OpenAI Responses »), URL de base = l'adresse publique de NemApi terminée par /v1, clé = ta clé "
+        "NemApi, modèle = deepseek-chat (ou qwen-chat…). Les deux protocoles et l'adresse sans /v1 sont "
+        "acceptés. MonkeyCode ajoute le chemin lui-même. Évite un nom de modèle contenant « claude » ou "
+        "« codex » : MonkeyCode choisirait alors un autre protocole que celui de NemApi."
+    ),
+    # the cloud agent talks through MonkeyCode's llmproxy, so the User-Agent
+    # may be rewritten; the marker of its system prompt is the reliable signal
+    user_agents=("ohmyagent", "monkeycode", "monkey-code"),
+    prompt_markers=("You are OhMyAgent",),
+    header="monkey-code",
+    snippet=(
+        "# MonkeyCode → Console → Modèles → « Lier »\n"
+        "Interface : OpenAI Chat            # ou OpenAI Responses, les deux marchent\n"
+        "URL de base : {base}               # MonkeyCode ajoute /chat/completions\n"
+        "Clé API : ta clé NemApi            # laisser vide si la protection est désactivée\n"
+        "Modèle : deepseek-chat            # ou qwen-chat, gemini-chat, glm-chat…\n"
+        "# Garde le tunnel Cloudflare ouvert : le proxy doit joindre ton poste.\n"
+    ),
+    features=(
+        Feature(
+            "persistent_chat",
+            "Plus de nouvelle URL",
+            "La requête ne rouvre jamais le chat web : la discussion reste ouverte d'un tour à l'autre. "
+            "Sans cela, chaque tour repartirait d'une discussion vide.",
+            tag="discussion",
+        ),
+        Feature(
+            "incremental_context",
+            "Contexte incrémental",
+            "Le contexte n'est pas retapé : NemApi compare l'historique envoyé par l'agent avec ce que la "
+            "discussion contient déjà et ne tape que le message nouveau. Indispensable ici : MonkeyCode "
+            "renvoie toute la conversation et le contenu des fichiers à chaque tour.",
+            tag="contexte",
+        ),
+        Feature(
+            "tool_calls",
+            "Appels d'outils",
+            "Le tableau « tools » de l'agent est transmis au modèle avec son contrat d'appel, et la réponse "
+            "revient au format OpenAI tool_calls. Les appels dont le nom est inconnu ne sont pas exécutés.",
+            tag="outils",
+        ),
+        Feature(
+            "side_queries_local",
+            "Requêtes annexes en local",
+            "Les requêtes d'arrière-plan reconnues (titre de session, suggestions, requêtes structurées) "
+            "reçoivent une réponse immédiate, sans rien taper dans la discussion. Le classifieur de "
+            "sécurité est refusé : l'agent te demande alors ton approbation.",
+            tag="local",
+        ),
+        Feature(
+            "continuation",
+            "Suite automatique des réponses coupées",
+            "Si la réponse s'arrête au milieu d'un appel d'outil (gros fichier), NemApi demande la suite "
+            "dans la même discussion et recolle les morceaux avant de répondre à l'agent.",
+            tag="fichiers longs",
+        ),
+        Feature(
+            "keepalive",
+            "Connexion maintenue pendant les longues réponses",
+            "En streaming, l'agent reçoit les en-têtes tout de suite puis un signal régulier : ni lui ni "
+            "Cloudflare (100 s de silence → erreur 524) ne coupent une réponse de plusieurs minutes.",
+            tag="réseau",
+        ),
+    ),
+)
+
+
 NEMESIS = AgentProfile(
     id="nemesis",
     name="Nemesis",
@@ -244,7 +322,7 @@ NEMESIS = AgentProfile(
 )
 
 
-AGENTS: Tuple[AgentProfile, ...] = (QWEN_CODE, NEMESIS)
+AGENTS: Tuple[AgentProfile, ...] = (QWEN_CODE, MONKEY_CODE, NEMESIS)
 AGENTS_BY_ID: Dict[str, AgentProfile] = {a.id: a for a in AGENTS}
 
 

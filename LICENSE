@@ -1,0 +1,80 @@
+Proprietary License — All rights reserved
+=========================================
+
+Copyright (c) 2026 Tete Ekoue. All rights reserved.
+
+NemApi (the "Software"), including its source code, its browser extension, its
+documentation and every file distributed with it, is proprietary software. It
+is not open source and it is not free to use outside the terms below.
+
+1. Grant
+
+   No license, express or implied, is granted except by a written agreement
+   signed by the copyright holder. Possession of a copy of the Software, or
+   access to its source code, does not grant any right to use it, copy it,
+   modify it, merge it, publish it, distribute it, sublicense it or sell it.
+
+2. Prohibited uses
+
+   Without the prior written permission of the copyright holder, you may not:
+
+   a. copy, reproduce or archive the Software, in whole or in part;
+   b. modify, adapt, translate or create derivative works of the Software;
+   c. distribute, publish, sublicense, sell, rent, lease or lend the Software
+      or any part of it, including as part of another product or service;
+   d. make the Software available to any third party, by network, hosting or
+      any other means;
+   e. remove or alter this notice, or any copyright, authorship or other
+      proprietary notice contained in the Software.
+
+3. Authorized evaluation
+
+   The copyright holder may, in writing, authorize a named person or entity to
+   install and run one copy of the Software for personal evaluation. Such an
+   authorization is personal, non-transferable, revocable at any time and
+   limited to the terms it states. In its absence, no use is authorized.
+
+4. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. THE ENTIRE
+   RISK ARISING OUT OF THE USE OR PERFORMANCE OF THE SOFTWARE REMAINS WITH THE
+   USER.
+
+5. Limitation of liability
+
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR
+   OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+6. Third-party services
+
+   The Software drives web interfaces operated by third parties (DeepSeek,
+   Qwen, Anthropic, Google, OpenAI, Moonshot, Zhipu and others). Those services
+   are governed by their own terms, which remain the user's responsibility. The
+   Software is not affiliated with, endorsed by, or sponsored by any of them.
+
+7. Termination
+
+   Any breach of this license terminates all rights granted under it
+   immediately. On termination, every copy of the Software must be destroyed.
+
+8. Governing law
+
+   This license is governed by the laws of the copyright holder's country of
+   residence, without regard to its conflict-of-law rules.
+
+---
+
+Licence propriétaire — traduction française de courtoisie
+=========================================================
+
+Le texte anglais ci-dessus fait foi. En résumé : ce logiciel n'est **pas** libre.
+Aucun droit d'utilisation, de copie, de modification, de publication ni de
+distribution n'est accordé sans un accord écrit du titulaire des droits. Le
+logiciel est fourni sans garantie d'aucune sorte, et le titulaire ne peut être
+tenu responsable d'aucun dommage lié à son utilisation.
+
+Pour toute demande de licence : ouvrir une issue sur ce dépôt privé.

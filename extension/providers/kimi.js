@@ -19,6 +19,12 @@
     '[contenteditable="true"][data-lexical-editor="true"][role="textbox"]',
     '[contenteditable="true"][data-lexical-editor="true"]',
     ".chat-input-editor",
+    // Kimi renamed/moved the composer more than once: these are the shapes
+    // seen since (an editor inside a container whose class mentions "input"
+    // or "chat-input"), then the generic ones.
+    '[class*="chat-input"] [contenteditable="true"]',
+    '[class*="input"] [contenteditable="true"][role="textbox"]',
+    '[data-testid*="editor" i] [contenteditable="true"]',
     '[contenteditable="true"][role="textbox"]',
     'div[contenteditable="true"]',
     "textarea",
@@ -30,10 +36,18 @@
     '[class*="send-button-container"] button',
     '[class*="send-btn"]',
     '[class*="send-button"]',
+    '[class*="sendBtn"]',
+    '[data-testid*="send" i]',
+    '[role="button"][class*="send" i]',
     'button[aria-label*="Send" i]',
+    '[role="button"][aria-label*="Send" i]',
     'button[aria-label*="发送"]',
+    '[role="button"][aria-label*="发送"]',
     'button[type="submit"]',
     "button.send-button",
+    // the arrow of a round send control is often an svg inside a div: the
+    // generic search below catches it, this is the named shape
+    '[class*="send" i] svg',
   ];
 
   // Image upload: the file input is PERSISTENT in the DOM — live DOM capture
@@ -82,7 +96,15 @@
 
   /** The editable surfaces of the composer, best candidate first. */
   function inputCandidates() {
-    return B.inputCandidatesFrom(INPUT);
+    const found = B.inputCandidatesFrom(INPUT);
+    if (found.length) return found;
+    // the selectors aged out: find what the page is really using
+    const guessed = B.discoverEditable ? B.discoverEditable() : null;
+    if (guessed) {
+      log("no known composer selector matched → using the detected editable surface");
+      return [guessed];
+    }
+    return found;
   }
 
   /**
@@ -109,9 +131,15 @@
         }
       } catch (_) {}
     }
-    return B.findByText
+    const byText = B.findByText
       ? B.findByText(["button", "[role='button']"], [/send/i, /发送/, /submit/i], root)
       : null;
+    if (byText) return byText;
+    // nothing known: let the shared discovery find the small clickable element
+    // sitting right of the composer, rather than retyping the prompt forever
+    const guessed = B.discoverSend ? B.discoverSend(input) : null;
+    if (guessed) log("no known send selector matched → using the detected send control");
+    return guessed;
   }
 
   function getMessageEls() {
